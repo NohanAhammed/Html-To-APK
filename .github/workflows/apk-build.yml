@@ -81,6 +81,7 @@ jobs:
               with urllib.request.urlopen(req, timeout=60) as response:
                   return response.read()
 
+          # Retrieve this user's build job.
           query = urllib.parse.urlencode({
               "id": "eq." + job_id,
               "select": "id,user_id,app_name,version,package_id,html_path,status"
@@ -95,15 +96,17 @@ jobs:
 
           job = rows[0]
 
-          if not isinstance(job.get("app_name"), str) or not job["app_name"].strip():
+          app_name = job.get("app_name")
+          version = job.get("version")
+          package_id = job.get("package_id")
+
+          if not isinstance(app_name, str) or not app_name.strip():
               raise SystemExit("The app name is missing.")
 
-          if not isinstance(job.get("version"), str) or not re.fullmatch(
-              r"[A-Za-z0-9][A-Za-z0-9._+-]{0,49}", job["version"]
+          if not isinstance(version, str) or not re.fullmatch(
+              r"[A-Za-z0-9][A-Za-z0-9._+-]{0,49}", version
           ):
               raise SystemExit("Invalid app version.")
-
-          package_id = job.get("package_id", "")
 
           if not isinstance(package_id, str) or not re.fullmatch(
               r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+",
@@ -118,16 +121,17 @@ jobs:
               {"Prefer": "return=minimal"}
           )
 
+          # Download the uploaded HTML.
           def download_storage(path):
               if not isinstance(path, str) or not path:
-                  raise SystemExit("The uploaded HTML path is missing.")
+                  raise SystemExit("Uploaded HTML path is missing.")
 
               encoded = urllib.parse.quote(path, safe="/")
               return request(
                   base + "/storage/v1/object/apk-builds/" + encoded
               )
 
-          html = download_storage(job["html_path"])
+          html = download_storage(job.get("html_path"))
 
           if not html:
               raise SystemExit("Uploaded HTML is empty.")
@@ -136,7 +140,7 @@ jobs:
           assets.mkdir(parents=True, exist_ok=True)
           (assets / "index.html").write_bytes(html)
 
-          # Update Gradle values safely.
+          # Update the Android Gradle configuration.
           gradle_file = Path("app/build.gradle")
 
           if not gradle_file.exists():
@@ -158,7 +162,7 @@ jobs:
 
           gradle_text, version_count = re.subn(
               r"""versionName\s+(['"])[^'"]*\1""",
-              lambda m: "versionName '" + job["version"] + "'",
+              lambda m: "versionName '" + version + "'",
               gradle_text,
               count=1
           )
@@ -170,53 +174,53 @@ jobs:
 
           gradle_file.write_text(gradle_text, encoding="utf-8")
 
-          # Parse and edit AndroidManifest.xml as real XML.
-          
-manifest = Path("app/src/main/AndroidManifest.xml")
+          # Clean and safely edit AndroidManifest.xml.
+          manifest = Path("app/src/main/AndroidManifest.xml")
 
-if not manifest.exists():
-    raise SystemExit("AndroidManifest.xml was not found.")
+          if not manifest.exists():
+              raise SystemExit("AndroidManifest.xml was not found.")
 
-android_ns = "http://schemas.android.com/apk/res/android"
-ET.register_namespace("android", android_ns)
+          raw = manifest.read_bytes()
 
-# Remove leading blank lines, spaces, and a UTF-8 BOM.
-raw = manifest.read_bytes()
-raw = raw.lstrip(b"\xef\xbb\xbf \t\r\n")
+          # Remove a UTF-8 BOM and leading whitespace/newlines.
+          raw = raw.lstrip(b"\xef\xbb\xbf \t\r\n")
 
-try:
-    root = ET.fromstring(raw)
-except ET.ParseError as exc:
-    raise SystemExit(
-        f"AndroidManifest.xml is still invalid after cleanup: {exc}"
-    )
+          android_ns = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", android_ns)
 
-if root.tag != "manifest":
-    raise SystemExit("Invalid Android manifest root element.")
+          try:
+              root = ET.fromstring(raw)
+          except ET.ParseError as exc:
+              raise SystemExit(
+                  f"AndroidManifest.xml is malformed after cleanup: {exc}"
+              )
 
-application = root.find("application")
+          if root.tag != "manifest":
+              raise SystemExit(
+                  "AndroidManifest.xml has an invalid root element."
+              )
 
-if application is None:
-    raise SystemExit("AndroidManifest.xml has no application element.")
+          application = root.find("application")
 
-application.set(
-    "{" + android_ns + "}label",
-    job["app_name"]
-)
+          if application is None:
+              raise SystemExit(
+                  "AndroidManifest.xml has no application element."
+              )
 
-tree = ET.ElementTree(root)
-tree.write(
-    str(manifest),
-    encoding="utf-8",
-    xml_declaration=True
-)
+          # XML serialization safely escapes special characters in app_name.
+          application.set(
+              "{" + android_ns + "}label",
+              app_name
+          )
 
-# Verify the saved manifest.
-ET.parse(str(manifest))
-print("Manifest cleaned, updated, and validated successfully.")
+          tree = ET.ElementTree(root)
+          tree.write(
+              str(manifest),
+              encoding="utf-8",
+              xml_declaration=True
+          )
 
-
-          # Validate the saved file again before Gradle runs.
+          # Confirm the actual saved file parses correctly.
           try:
               ET.parse(str(manifest))
           except ET.ParseError as exc:
@@ -226,7 +230,7 @@ print("Manifest cleaned, updated, and validated successfully.")
 
           print("HTML downloaded successfully.")
           print("App name, package ID, and version configured.")
-          print("AndroidManifest.xml parsed and validated successfully.")
+          print("AndroidManifest.xml cleaned and validated.")
           print("Ready to build APK.")
           PY
 
@@ -249,7 +253,8 @@ print("Manifest cleaned, updated, and validated successfully.")
           if not base or not key or not job_id:
               raise SystemExit("Missing Supabase configuration.")
 
-          def request(url, method="GET", data=None, content_type=None, extra=None):
+          def request(url, method="GET", data=None,
+                      content_type=None, extra=None):
               headers = {
                   "apikey": key,
                   "Authorization": "Bearer " + key
@@ -357,5 +362,5 @@ print("Manifest cleaned, updated, and validated successfully.")
               with urllib.request.urlopen(req, timeout=30) as response:
                   response.read()
 
-          print("Build failure status recorded when Supabase was available.")
+          print("Failure status update attempted.")
           PY
