@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -175,7 +174,8 @@ input:focus { border-color: #666; }
   cursor: pointer;
 }
 
-.upload:hover {
+.upload:hover,
+.upload.drag {
   border-color: #777;
   background: #0a0a0a;
 }
@@ -369,15 +369,11 @@ input:focus { border-color: #666; }
 .preview img {
   width: 44px;
   height: 44px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 11px;
   border: 1px solid #303030;
+  background: #050505;
   display: none;
-}
-
-.preview-text {
-  font-size: 12px;
-  color: #777;
 }
 
 @media(max-width:480px) {
@@ -446,7 +442,7 @@ input:focus { border-color: #666; }
           <span>
             <span class="symbol">▧</span>
             <strong>Upload a PNG logo</strong>
-            <small>Square image recommended</small>
+            <small>Square image recommended · up to 5 MB</small>
           </span>
         </label>
         <div class="preview">
@@ -487,13 +483,16 @@ input:focus { border-color: #666; }
         <div class="field">
           <label for="packageId">Package ID</label>
           <input id="packageId" type="text"
-            value="com.example.myapp" maxlength="120"
+            value="com.friends.app" maxlength="120"
             pattern="[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+"
-            title="Use a format like com.example.myapp" required>
+            title="Use a format like com.friends.app" required>
         </div>
       </div>
 
-      <p class="hint">Package ID should be unique for your app.</p>
+      <p class="hint">
+        Example: com.friends.app. Use your own unique ID and keep it
+        unchanged when building updates to the same app.
+      </p>
     </section>
 
     <section class="panel">
@@ -576,6 +575,7 @@ let activeJobId = null;
 let pollingTimer = null;
 let pollAttempts = 0;
 let currentToken = null;
+let logoPreviewUrl = null;
 
 if (window.supabase) {
   client = window.supabase.createClient(
@@ -624,7 +624,13 @@ logoFile.addEventListener("change", () => {
   const file = logoFile.files[0];
   const preview = $("logoPreview");
 
+  if (logoPreviewUrl) {
+    URL.revokeObjectURL(logoPreviewUrl);
+    logoPreviewUrl = null;
+  }
+
   if (!file) {
+    preview.removeAttribute("src");
     preview.style.display = "none";
     $("logoStatus").textContent = "No logo selected";
     return;
@@ -639,20 +645,42 @@ logoFile.addEventListener("change", () => {
     return;
   }
 
-  preview.src = URL.createObjectURL(file);
+  if (file.size > 5 * 1024 * 1024) {
+    showStatus("Logo is too large", "Choose a PNG under 5 MB.");
+    logoFile.value = "";
+    preview.style.display = "none";
+    $("logoStatus").textContent = "No logo selected";
+    return;
+  }
+
+  logoPreviewUrl = URL.createObjectURL(file);
+  preview.src = logoPreviewUrl;
   preview.style.display = "block";
   $("logoStatus").textContent =
     `${file.name} · ${formatSize(file.size)}`;
 });
 
-$("appName").addEventListener("input", () => {
-  if (!$("packageId").dataset.edited) {
-    const name = $("appName").value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "")
-      .slice(0, 28) || "myapp";
+function makePackageId(appName) {
+  let name = appName
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "")
+    .slice(0, 35);
 
-    $("packageId").value = "com.example." + name;
+  if (!name) name = "myapp";
+
+  // Android package segments must start with a letter.
+  if (!/^[a-z]/.test(name)) {
+    name = "app" + name;
+  }
+
+  return `com.${name}.app`;
+}
+
+$("appName").addEventListener("input", () => {
+  const packageInput = $("packageId");
+
+  if (!packageInput.dataset.edited) {
+    packageInput.value = makePackageId($("appName").value);
   }
 });
 
@@ -740,7 +768,7 @@ function validateConfig(config) {
 
   if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/
       .test(config.packageId)) {
-    return "Check the package ID, for example com.example.myapp.";
+    return "Check the package ID, for example com.friends.app.";
   }
 
   return null;
@@ -792,7 +820,12 @@ $("builderForm").addEventListener("submit", async event => {
 
     const form = new FormData();
     form.append("htmlFile", html);
-    if (logo) form.append("logoFile", logo);
+
+    // This sends the selected logo to the existing Supabase function.
+    if (logo) {
+      form.append("logoFile", logo);
+    }
+
     form.append("config", JSON.stringify(config));
 
     const response = await fetch(
@@ -829,7 +862,6 @@ $("builderForm").addEventListener("submit", async event => {
 
     setButton("Building APK…", true);
 
-    // Check the status using the same job ID returned by start-build.
     await pollStatus(token);
 
   } catch (error) {
@@ -851,7 +883,6 @@ async function pollStatus(token) {
   pollAttempts++;
 
   try {
-    // IMPORTANT: build-status expects POST with JSON { jobId }.
     const response = await fetch(
       SUPABASE_URL + "/functions/v1/build-status",
       {
@@ -878,16 +909,30 @@ async function pollStatus(token) {
     const status = String(result.status || "").toLowerCase();
 
     if (status === "complete" && result.downloadUrl) {
+      const appName =
+        result.appName || $("appName").value.trim() || "MyApp";
+
+      const version =
+        result.version || $("version").value.trim() || "1.0.0";
+
+      const safeName = appName
+        .replace(/[^a-z0-9_-]+/gi, "-")
+        .replace(/^-+|-+$/g, "") || "MyApp";
+
+      const safeVersion = version
+        .replace(/[^a-z0-9._-]+/gi, "-");
+
       showStatus(
         "APK ready!",
-        `${result.appName || "Your app"} has finished building.`
+        `${appName} has finished building.`
       );
 
       const link = document.createElement("a");
       link.href = result.downloadUrl;
-      link.textContent = "Download APK";
-      link.download = "";
+      link.textContent = `Download ${safeName}-v${safeVersion}.apk`;
+      link.download = `${safeName}-v${safeVersion}.apk`;
       link.rel = "noopener";
+
       $("status").appendChild(document.createElement("br"));
       $("status").appendChild(link);
 
@@ -908,7 +953,7 @@ async function pollStatus(token) {
       showStatus(
         "Build is taking longer than expected.",
         "Your job ID is " + activeJobId +
-        ". You can retry the status check without starting another build."
+        ". Tap Check build again to check the same build."
       );
       setButton("Check build again", false);
       return;
@@ -937,7 +982,7 @@ async function pollStatus(token) {
   }
 }
 
-// Retry status checking without submitting another build.
+// Retry checking the existing job without creating another build.
 $("buildButton").addEventListener("click", async event => {
   if (activeJobId &&
       $("buildButton").querySelector("span").textContent ===
