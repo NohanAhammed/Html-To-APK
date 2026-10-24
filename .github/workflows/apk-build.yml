@@ -6,7 +6,7 @@ on:
     inputs:
       job_id:
         description: "Supabase build job ID"
-        required: false
+        required: true
         type: string
 
 permissions:
@@ -15,28 +15,231 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      JOB_ID: ${{ inputs.job_id }}
+
     steps:
-      - name: Download project files
+      - name: Download project
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
-          python-version: "3.12"
+          distribution: temurin
+          java-version: "17"
 
-      - name: Install build dependencies
-        run: |
-          if [ -f scripts/requirements.txt ]; then
-            pip install -r scripts/requirements.txt
-          fi
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
 
-      - name: Check project files
+      - name: Prepare Android app from Supabase
         run: |
-          echo "Checking HTML-to-APK converter files..."
-          test -f web/index.html || {
-            echo "Missing web/index.html"
-            exit 1
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse
+          from pathlib import Path
+
+          base = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
+
+          if not base or not key or not job_id:
+              raise SystemExit("Missing Supabase secrets or job ID")
+
+          headers = {
+              "apikey": key,
+              "Authorization": "Bearer " + key,
+              "Content-Type": "application/json"
           }
-          echo "Website file found."
-          echo "Android APK build steps still need to be configured."
 
+          def request(url, method="GET", data=None, extra=None):
+              h = dict(headers)
+              if extra:
+                  h.update(extra)
+              body = None if data is None else (
+                  data if isinstance(data, bytes)
+                  else json.dumps(data).encode()
+              )
+              req = urllib.request.Request(
+                  url, data=body, headers=h, method=method
+              )
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  return response.read()
+
+          query = urllib.parse.urlencode({
+              "id": "eq." + job_id,
+              "select": "id,user_id,app_name,version,package_id,html_path,status"
+          })
+          rows = json.loads(request(
+              base + "/rest/v1/apk_build_jobs?" + query
+          ))
+
+          if len(rows) != 1:
+              raise SystemExit("Build job not found")
+
+          job = rows[0]
+          request(
+              base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
+              "PATCH",
+              {"status": "building", "error_message": None},
+              {"Prefer": "return=minimal"}
+          )
+
+          def download_storage(path):
+              encoded = urllib.parse.quote(path, safe="/")
+              return request(
+                  base + "/storage/v1/object/apk-builds/" + encoded
+              )
+
+          html = download_storage(job["html_path"])
+          if not html:
+              raise SystemExit("Uploaded HTML is empty")
+
+          assets = Path("app/src/main/assets")
+          assets.mkdir(parents=True, exist_ok=True)
+          (assets / "index.html").write_bytes(html)
+
+          gradle_file = Path("app/build.gradle")
+          text = gradle_file.read_text()
+          import re
+
+          package_id = job["package_id"]
+          if not re.fullmatch(
+              r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+",
+              package_id
+          ):
+              raise SystemExit("Invalid package ID")
+
+          text = re.sub(
+              r"applicationId\s+['\"][^'\"]+['\"]",
+              "applicationId '" + package_id + "'",
+              text
+          )
+          text = re.sub(
+              r"versionName\s+['\"][^'\"]+['\"]",
+              "versionName '" + job["version"] + "'",
+              text
+          )
+          gradle_file.write_text(text)
+
+          manifest = Path("app/src/main/AndroidManifest.xml")
+          m = manifest.read_text()
+          m = re.sub(
+              r'android:label="[^"]*"',
+              'android:label="' +
+              job["app_name"].replace("&", "&amp;").replace('"', "&quot;") +
+              '"',
+              m
+          )
+          manifest.write_text(m)
+
+          print("Android build input prepared.")
+          PY
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK to private Supabase storage
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse
+          from pathlib import Path
+
+          base = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
+
+          query = urllib.parse.urlencode({
+              "id": "eq." + job_id,
+              "select": "id,user_id"
+          })
+          req = urllib.request.Request(
+              base + "/rest/v1/apk_build_jobs?" + query,
+              headers={
+                  "apikey": key,
+                  "Authorization": "Bearer " + key
+              }
+          )
+          with urllib.request.urlopen(req) as r:
+              rows = json.loads(r.read())
+
+          if len(rows) != 1:
+              raise SystemExit("Build job not found")
+
+          apk = Path(
+              "app/build/outputs/apk/debug/app-debug.apk"
+          ).read_bytes()
+          path = "outputs/{}/{}/app.apk".format(
+              rows[0]["user_id"], job_id
+          )
+          encoded = urllib.parse.quote(path, safe="/")
+
+          req = urllib.request.Request(
+              base + "/storage/v1/object/apk-builds/" + encoded,
+              data=apk,
+              method="POST",
+              headers={
+                  "apikey": key,
+                  "Authorization": "Bearer " + key,
+                  "Content-Type": "application/vnd.android.package-archive",
+                  "x-upsert": "true"
+              }
+          )
+          with urllib.request.urlopen(req) as r:
+              r.read()
+
+          payload = json.dumps({
+              "status": "complete",
+              "apk_path": path,
+              "error_message": None
+          }).encode()
+
+          req = urllib.request.Request(
+              base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
+              data=payload,
+              method="PATCH",
+              headers={
+                  "apikey": key,
+                  "Authorization": "Bearer " + key,
+                  "Content-Type": "application/json",
+                  "Prefer": "return=minimal"
+              }
+          )
+          with urllib.request.urlopen(req) as r:
+              r.read()
+
+          print("APK uploaded successfully.")
+          PY
+
+      - name: Mark build failed
+        if: failure()
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request
+          base = os.environ.get("SUPABASE_URL", "").rstrip("/")
+          key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+          job = os.environ.get("JOB_ID", "")
+          if base and key and job:
+              body = json.dumps({
+                  "status": "failed",
+                  "error_message": "Build failed. Check GitHub Actions logs."
+              }).encode()
+              req = urllib.request.Request(
+                  base + "/rest/v1/apk_build_jobs?id=eq." + job,
+                  data=body,
+                  method="PATCH",
+                  headers={
+                      "apikey": key,
+                      "Authorization": "Bearer " + key,
+                      "Content-Type": "application/json",
+                      "Prefer": "return=minimal"
+                  }
+              )
+              with urllib.request.urlopen(req) as r:
+                  r.read()
+          PY
