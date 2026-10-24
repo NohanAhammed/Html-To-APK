@@ -37,7 +37,10 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Prepare Android app from Supabase
+      - name: Install image tools
+        run: python3 -m pip install --user Pillow
+
+      - name: Prepare Android app and launcher icon
         shell: bash
         run: |
           python3 - <<'PY'
@@ -48,15 +51,15 @@ jobs:
           import urllib.parse
           import xml.etree.ElementTree as ET
           from pathlib import Path
+          from io import BytesIO
+          from PIL import Image, ImageOps, ImageDraw
 
-          base = os.environ.get("SUPABASE_URL", "").rstrip("/")
-          key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-          job_id = os.environ.get("JOB_ID", "")
+          base = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
 
           if not base or not key or not job_id:
-              raise SystemExit(
-                  "Missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or JOB_ID."
-              )
+              raise SystemExit("Missing Supabase configuration.")
 
           headers = {
               "apikey": key,
@@ -68,23 +71,22 @@ jobs:
               h = dict(headers)
               if extra:
                   h.update(extra)
-
               body = None if data is None else (
                   data if isinstance(data, bytes)
                   else json.dumps(data).encode("utf-8")
               )
-
               req = urllib.request.Request(
                   url, data=body, headers=h, method=method
               )
-
-              with urllib.request.urlopen(req, timeout=60) as response:
+              with urllib.request.urlopen(req, timeout=120) as response:
                   return response.read()
 
-          # Retrieve this user's build job.
           query = urllib.parse.urlencode({
               "id": "eq." + job_id,
-              "select": "id,user_id,app_name,version,package_id,html_path,status"
+              "select": (
+                  "id,user_id,app_name,version,package_id,"
+                  "html_path,logo_path,status"
+              )
           })
 
           rows = json.loads(request(
@@ -99,12 +101,13 @@ jobs:
           app_name = job.get("app_name")
           version = job.get("version")
           package_id = job.get("package_id")
+          logo_path = job.get("logo_path")
 
           if not isinstance(app_name, str) or not app_name.strip():
-              raise SystemExit("The app name is missing.")
+              raise SystemExit("App name is missing.")
 
           if not isinstance(version, str) or not re.fullmatch(
-              r"[A-Za-z0-9][A-Za-z0-9._+-]{0,49}", version
+              r"[0-9]+(\.[0-9]+){0,3}", version
           ):
               raise SystemExit("Invalid app version.")
 
@@ -121,123 +124,153 @@ jobs:
               {"Prefer": "return=minimal"}
           )
 
-          # Download the uploaded HTML.
           def download_storage(path):
               if not isinstance(path, str) or not path:
-                  raise SystemExit("Uploaded HTML path is missing.")
-
+                  raise SystemExit("Uploaded file path is missing.")
               encoded = urllib.parse.quote(path, safe="/")
               return request(
                   base + "/storage/v1/object/apk-builds/" + encoded
               )
 
+          # Put the uploaded HTML into the Android WebView assets.
           html = download_storage(job.get("html_path"))
-
           if not html:
-              raise SystemExit("Uploaded HTML is empty.")
+              raise SystemExit("Uploaded HTML file is empty.")
 
           assets = Path("app/src/main/assets")
           assets.mkdir(parents=True, exist_ok=True)
           (assets / "index.html").write_bytes(html)
 
-          # Update the Android Gradle configuration.
+          # Configure the app ID and version.
           gradle_file = Path("app/build.gradle")
-
           if not gradle_file.exists():
               raise SystemExit("app/build.gradle was not found.")
 
           gradle_text = gradle_file.read_text(encoding="utf-8")
 
-          gradle_text, package_count = re.subn(
+          gradle_text, count_id = re.subn(
               r"""applicationId\s+(['"])[^'"]*\1""",
               lambda m: "applicationId '" + package_id + "'",
               gradle_text,
               count=1
           )
+          if count_id != 1:
+              raise SystemExit("Could not update applicationId.")
 
-          if package_count != 1:
-              raise SystemExit(
-                  "Could not find applicationId in app/build.gradle."
-              )
-
-          gradle_text, version_count = re.subn(
+          gradle_text, count_version = re.subn(
               r"""versionName\s+(['"])[^'"]*\1""",
               lambda m: "versionName '" + version + "'",
               gradle_text,
               count=1
           )
-
-          if version_count != 1:
-              raise SystemExit(
-                  "Could not find versionName in app/build.gradle."
-              )
+          if count_version != 1:
+              raise SystemExit("Could not update versionName.")
 
           gradle_file.write_text(gradle_text, encoding="utf-8")
 
-          # Clean and safely edit AndroidManifest.xml.
-          manifest = Path("app/src/main/AndroidManifest.xml")
+          # Generate Android launcher icon resources from the PNG.
+          # If no logo was uploaded, create a simple fallback icon.
+          if logo_path:
+              logo_bytes = download_storage(logo_path)
+              try:
+                  source = Image.open(BytesIO(logo_bytes)).convert("RGBA")
+                  source.load()
+              except Exception as exc:
+                  raise SystemExit("Uploaded logo is not a valid image: " + str(exc))
+          else:
+              source = Image.new("RGBA", (512, 512), (15, 15, 15, 255))
+              draw = ImageDraw.Draw(source)
+              draw.rounded_rectangle(
+                  (48, 48, 464, 464),
+                  radius=100,
+                  outline=(225, 225, 225, 255),
+                  width=18
+              )
+              draw.text((194, 155), "A", fill=(240, 240, 240, 255))
 
+          # Fit the complete logo without cropping it.
+          square = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+          fitted = ImageOps.contain(
+              source, (448, 448), method=Image.Resampling.LANCZOS
+          )
+          square.alpha_composite(
+              fitted,
+              ((512 - fitted.width) // 2, (512 - fitted.height) // 2)
+          )
+
+          res = Path("app/src/main/res")
+          sizes = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192
+          }
+
+          for folder, size in sizes.items():
+              directory = res / folder
+              directory.mkdir(parents=True, exist_ok=True)
+              icon = square.resize(
+                  (size, size), Image.Resampling.LANCZOS
+              )
+              icon.save(directory / "ic_launcher.png", format="PNG")
+              icon.save(directory / "ic_launcher_round.png", format="PNG")
+
+          # Set launcher icon and app label in the manifest.
+          manifest = Path("app/src/main/AndroidManifest.xml")
           if not manifest.exists():
               raise SystemExit("AndroidManifest.xml was not found.")
 
-          raw = manifest.read_bytes()
-
-          # Remove a UTF-8 BOM and leading whitespace/newlines.
-          raw = raw.lstrip(b"\xef\xbb\xbf \t\r\n")
-
+          raw = manifest.read_bytes().lstrip(b"\xef\xbb\xbf \t\r\n")
           android_ns = "http://schemas.android.com/apk/res/android"
           ET.register_namespace("android", android_ns)
 
           try:
               root = ET.fromstring(raw)
           except ET.ParseError as exc:
-              raise SystemExit(
-                  f"AndroidManifest.xml is malformed after cleanup: {exc}"
-              )
+              raise SystemExit("Invalid AndroidManifest.xml: " + str(exc))
 
           if root.tag != "manifest":
-              raise SystemExit(
-                  "AndroidManifest.xml has an invalid root element."
-              )
+              raise SystemExit("Invalid manifest root element.")
 
           application = root.find("application")
-
           if application is None:
-              raise SystemExit(
-                  "AndroidManifest.xml has no application element."
-              )
+              raise SystemExit("Manifest has no application element.")
 
-          # XML serialization safely escapes special characters in app_name.
+          application.set("{" + android_ns + "}label", app_name)
+          application.set("{" + android_ns + "}icon", "@mipmap/ic_launcher")
           application.set(
-              "{" + android_ns + "}label",
-              app_name
+              "{" + android_ns + "}roundIcon",
+              "@mipmap/ic_launcher_round"
           )
 
-          tree = ET.ElementTree(root)
-          tree.write(
-              str(manifest),
-              encoding="utf-8",
-              xml_declaration=True
+          ET.ElementTree(root).write(
+              str(manifest), encoding="utf-8", xml_declaration=True
           )
 
-          # Confirm the actual saved file parses correctly.
-          try:
-              ET.parse(str(manifest))
-          except ET.ParseError as exc:
-              raise SystemExit(
-                  f"Generated AndroidManifest.xml is invalid: {exc}"
-              )
+          # Validate generated manifest.
+          ET.parse(str(manifest))
 
-          print("HTML downloaded successfully.")
-          print("App name, package ID, and version configured.")
-          print("AndroidManifest.xml cleaned and validated.")
-          print("Ready to build APK.")
+          print("HTML copied into app assets.")
+          print("Package ID and version configured.")
+          print("Launcher icons generated.")
+          print("Manifest validated.")
+
+          # Save the final APK path and desired filename for upload.
+          safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", app_name).strip("-")
+          safe_name = safe_name or "MyApp"
+          safe_version = re.sub(r"[^A-Za-z0-9._-]+", "-", version)
+          apk_filename = f"{safe_name}-v{safe_version}.apk"
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write("APK_FILENAME=" + apk_filename + "\n")
           PY
 
       - name: Build APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK to private Supabase storage
+        shell: bash
         run: |
           python3 - <<'PY'
           import os
@@ -246,30 +279,25 @@ jobs:
           import urllib.parse
           from pathlib import Path
 
-          base = os.environ.get("SUPABASE_URL", "").rstrip("/")
-          key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-          job_id = os.environ.get("JOB_ID", "")
+          base = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+          job_id = os.environ["JOB_ID"]
+          filename = os.environ["APK_FILENAME"]
 
-          if not base or not key or not job_id:
-              raise SystemExit("Missing Supabase configuration.")
+          headers = {
+              "apikey": key,
+              "Authorization": "Bearer " + key
+          }
 
-          def request(url, method="GET", data=None,
-                      content_type=None, extra=None):
-              headers = {
-                  "apikey": key,
-                  "Authorization": "Bearer " + key
-              }
-
+          def request(url, method="GET", data=None, content_type=None, extra=None):
+              h = dict(headers)
               if content_type:
-                  headers["Content-Type"] = content_type
-
+                  h["Content-Type"] = content_type
               if extra:
-                  headers.update(extra)
-
+                  h.update(extra)
               req = urllib.request.Request(
-                  url, data=data, method=method, headers=headers
+                  url, data=data, method=method, headers=h
               )
-
               with urllib.request.urlopen(req, timeout=120) as response:
                   return response.read()
 
@@ -281,26 +309,17 @@ jobs:
           rows = json.loads(request(
               base + "/rest/v1/apk_build_jobs?" + query
           ))
-
           if len(rows) != 1:
               raise SystemExit("Build job not found.")
 
-          apk_file = Path(
-              "app/build/outputs/apk/debug/app-debug.apk"
-          )
-
-          if not apk_file.exists():
-              raise SystemExit("APK output file was not created.")
+          apk_file = Path("app/build/outputs/apk/debug/app-debug.apk")
+          if not apk_file.exists() or apk_file.stat().st_size == 0:
+              raise SystemExit("APK output was not created.")
 
           apk = apk_file.read_bytes()
-
-          if not apk:
-              raise SystemExit("APK output file is empty.")
-
-          path = "outputs/{}/{}/app.apk".format(
-              rows[0]["user_id"], job_id
+          path = "outputs/{}/{}/{}".format(
+              rows[0]["user_id"], job_id, filename
           )
-
           encoded = urllib.parse.quote(path, safe="/")
 
           request(
@@ -325,7 +344,7 @@ jobs:
               extra={"Prefer": "return=minimal"}
           )
 
-          print("APK uploaded successfully to private Supabase storage.")
+          print("APK uploaded:", filename)
           PY
 
       - name: Mark build failed
@@ -342,14 +361,14 @@ jobs:
           job_id = os.environ.get("JOB_ID", "")
 
           if base and key and job_id:
-              body = json.dumps({
+              payload = json.dumps({
                   "status": "failed",
                   "error_message": "Build failed. Check GitHub Actions logs."
               }).encode("utf-8")
 
               req = urllib.request.Request(
                   base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
-                  data=body,
+                  data=payload,
                   method="PATCH",
                   headers={
                       "apikey": key,
