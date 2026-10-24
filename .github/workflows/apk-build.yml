@@ -171,43 +171,50 @@ jobs:
           gradle_file.write_text(gradle_text, encoding="utf-8")
 
           # Parse and edit AndroidManifest.xml as real XML.
-          manifest = Path("app/src/main/AndroidManifest.xml")
+          
+manifest = Path("app/src/main/AndroidManifest.xml")
 
-          if not manifest.exists():
-              raise SystemExit("AndroidManifest.xml was not found.")
+if not manifest.exists():
+    raise SystemExit("AndroidManifest.xml was not found.")
 
-          android_ns = "http://schemas.android.com/apk/res/android"
-          ET.register_namespace("android", android_ns)
+android_ns = "http://schemas.android.com/apk/res/android"
+ET.register_namespace("android", android_ns)
 
-          try:
-              tree = ET.parse(str(manifest))
-          except ET.ParseError as exc:
-              raise SystemExit(
-                  f"AndroidManifest.xml is malformed: {exc}"
-              )
+# Remove leading blank lines, spaces, and a UTF-8 BOM.
+raw = manifest.read_bytes()
+raw = raw.lstrip(b"\xef\xbb\xbf \t\r\n")
 
-          root = tree.getroot()
+try:
+    root = ET.fromstring(raw)
+except ET.ParseError as exc:
+    raise SystemExit(
+        f"AndroidManifest.xml is still invalid after cleanup: {exc}"
+    )
 
-          if root.tag != "manifest":
-              raise SystemExit(
-                  "AndroidManifest.xml has an invalid root element."
-              )
+if root.tag != "manifest":
+    raise SystemExit("Invalid Android manifest root element.")
 
-          application = root.find("application")
+application = root.find("application")
 
-          if application is None:
-              raise SystemExit(
-                  "AndroidManifest.xml has no application element."
-              )
+if application is None:
+    raise SystemExit("AndroidManifest.xml has no application element.")
 
-          # ElementTree escapes special characters in the app name correctly.
-          application.set("{" + android_ns + "}label", job["app_name"])
+application.set(
+    "{" + android_ns + "}label",
+    job["app_name"]
+)
 
-          tree.write(
-              str(manifest),
-              encoding="utf-8",
-              xml_declaration=True
-          )
+tree = ET.ElementTree(root)
+tree.write(
+    str(manifest),
+    encoding="utf-8",
+    xml_declaration=True
+)
+
+# Verify the saved manifest.
+ET.parse(str(manifest))
+print("Manifest cleaned, updated, and validated successfully.")
+
 
           # Validate the saved file again before Gradle runs.
           try:
