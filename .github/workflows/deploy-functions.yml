@@ -1,33 +1,43 @@
 
-name: Deploy Supabase Functions
+name: Deploy Supabase Edge Functions
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "supabase/functions/**"
-      - ".github/workflows/deploy-functions.yml"
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
+    name: Deploy build-status
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: supabase/setup-cli@v1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
         with:
           version: latest
 
-      - name: Deploy start-build
-        run: supabase functions deploy start-build --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Validate required secrets
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: |
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+            echo "Missing GitHub secret: SUPABASE_ACCESS_TOKEN"
+            exit 1
+          fi
 
-      - name: Deploy build-status
-        run: supabase functions deploy build-status --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Deploy build-status function
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: |
+          supabase functions deploy build-status \
+            --project-ref hjsqxgtjczxtfgqozybx
+
+      - name: Deployment complete
+        run: |
+          echo "build-status deployment command completed."
+          echo "Check the job logs to confirm deployment succeeded."
