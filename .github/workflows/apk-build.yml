@@ -38,17 +38,25 @@ jobs:
           gradle-version: "8.7"
 
       - name: Prepare Android app from Supabase
+        shell: bash
         run: |
           python3 - <<'PY'
-          import os, json, urllib.request, urllib.parse
+          import os
+          import json
+          import re
+          import urllib.request
+          import urllib.parse
+          import xml.etree.ElementTree as ET
           from pathlib import Path
 
-          base = os.environ["SUPABASE_URL"].rstrip("/")
-          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-          job_id = os.environ["JOB_ID"]
+          base = os.environ.get("SUPABASE_URL", "").rstrip("/")
+          key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+          job_id = os.environ.get("JOB_ID", "")
 
           if not base or not key or not job_id:
-              raise SystemExit("Missing Supabase secrets or job ID")
+              raise SystemExit(
+                  "Missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or JOB_ID."
+              )
 
           headers = {
               "apikey": key,
@@ -60,13 +68,16 @@ jobs:
               h = dict(headers)
               if extra:
                   h.update(extra)
+
               body = None if data is None else (
                   data if isinstance(data, bytes)
-                  else json.dumps(data).encode()
+                  else json.dumps(data).encode("utf-8")
               )
+
               req = urllib.request.Request(
                   url, data=body, headers=h, method=method
               )
+
               with urllib.request.urlopen(req, timeout=60) as response:
                   return response.read()
 
@@ -74,14 +85,32 @@ jobs:
               "id": "eq." + job_id,
               "select": "id,user_id,app_name,version,package_id,html_path,status"
           })
+
           rows = json.loads(request(
               base + "/rest/v1/apk_build_jobs?" + query
           ))
 
           if len(rows) != 1:
-              raise SystemExit("Build job not found")
+              raise SystemExit("Build job not found in Supabase.")
 
           job = rows[0]
+
+          if not isinstance(job.get("app_name"), str) or not job["app_name"].strip():
+              raise SystemExit("The app name is missing.")
+
+          if not isinstance(job.get("version"), str) or not re.fullmatch(
+              r"[A-Za-z0-9][A-Za-z0-9._+-]{0,49}", job["version"]
+          ):
+              raise SystemExit("Invalid app version.")
+
+          package_id = job.get("package_id", "")
+
+          if not isinstance(package_id, str) or not re.fullmatch(
+              r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+",
+              package_id
+          ):
+              raise SystemExit("Invalid Android package ID.")
+
           request(
               base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
               "PATCH",
@@ -90,129 +119,201 @@ jobs:
           )
 
           def download_storage(path):
+              if not isinstance(path, str) or not path:
+                  raise SystemExit("The uploaded HTML path is missing.")
+
               encoded = urllib.parse.quote(path, safe="/")
               return request(
                   base + "/storage/v1/object/apk-builds/" + encoded
               )
 
           html = download_storage(job["html_path"])
+
           if not html:
-              raise SystemExit("Uploaded HTML is empty")
+              raise SystemExit("Uploaded HTML is empty.")
 
           assets = Path("app/src/main/assets")
           assets.mkdir(parents=True, exist_ok=True)
           (assets / "index.html").write_bytes(html)
 
+          # Update Gradle values safely.
           gradle_file = Path("app/build.gradle")
-          text = gradle_file.read_text()
-          import re
 
-          package_id = job["package_id"]
-          if not re.fullmatch(
-              r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+",
-              package_id
-          ):
-              raise SystemExit("Invalid package ID")
+          if not gradle_file.exists():
+              raise SystemExit("app/build.gradle was not found.")
 
-          text = re.sub(
-              r"applicationId\s+['\"][^'\"]+['\"]",
-              "applicationId '" + package_id + "'",
-              text
+          gradle_text = gradle_file.read_text(encoding="utf-8")
+
+          gradle_text, package_count = re.subn(
+              r"""applicationId\s+(['"])[^'"]*\1""",
+              lambda m: "applicationId '" + package_id + "'",
+              gradle_text,
+              count=1
           )
-          text = re.sub(
-              r"versionName\s+['\"][^'\"]+['\"]",
-              "versionName '" + job["version"] + "'",
-              text
-          )
-          gradle_file.write_text(text)
 
+          if package_count != 1:
+              raise SystemExit(
+                  "Could not find applicationId in app/build.gradle."
+              )
+
+          gradle_text, version_count = re.subn(
+              r"""versionName\s+(['"])[^'"]*\1""",
+              lambda m: "versionName '" + job["version"] + "'",
+              gradle_text,
+              count=1
+          )
+
+          if version_count != 1:
+              raise SystemExit(
+                  "Could not find versionName in app/build.gradle."
+              )
+
+          gradle_file.write_text(gradle_text, encoding="utf-8")
+
+          # Parse and edit AndroidManifest.xml as real XML.
           manifest = Path("app/src/main/AndroidManifest.xml")
-          m = manifest.read_text()
-          m = re.sub(
-              r'android:label="[^"]*"',
-              'android:label="' +
-              job["app_name"].replace("&", "&amp;").replace('"', "&quot;") +
-              '"',
-              m
-          )
-          manifest.write_text(m)
 
-          print("Android build input prepared.")
+          if not manifest.exists():
+              raise SystemExit("AndroidManifest.xml was not found.")
+
+          android_ns = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", android_ns)
+
+          try:
+              tree = ET.parse(str(manifest))
+          except ET.ParseError as exc:
+              raise SystemExit(
+                  f"AndroidManifest.xml is malformed: {exc}"
+              )
+
+          root = tree.getroot()
+
+          if root.tag != "manifest":
+              raise SystemExit(
+                  "AndroidManifest.xml has an invalid root element."
+              )
+
+          application = root.find("application")
+
+          if application is None:
+              raise SystemExit(
+                  "AndroidManifest.xml has no application element."
+              )
+
+          # ElementTree escapes special characters in the app name correctly.
+          application.set("{" + android_ns + "}label", job["app_name"])
+
+          tree.write(
+              str(manifest),
+              encoding="utf-8",
+              xml_declaration=True
+          )
+
+          # Validate the saved file again before Gradle runs.
+          try:
+              ET.parse(str(manifest))
+          except ET.ParseError as exc:
+              raise SystemExit(
+                  f"Generated AndroidManifest.xml is invalid: {exc}"
+              )
+
+          print("HTML downloaded successfully.")
+          print("App name, package ID, and version configured.")
+          print("AndroidManifest.xml parsed and validated successfully.")
+          print("Ready to build APK.")
           PY
 
       - name: Build APK
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK to private Supabase storage
         run: |
           python3 - <<'PY'
-          import os, json, urllib.request, urllib.parse
+          import os
+          import json
+          import urllib.request
+          import urllib.parse
           from pathlib import Path
 
-          base = os.environ["SUPABASE_URL"].rstrip("/")
-          key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-          job_id = os.environ["JOB_ID"]
+          base = os.environ.get("SUPABASE_URL", "").rstrip("/")
+          key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+          job_id = os.environ.get("JOB_ID", "")
+
+          if not base or not key or not job_id:
+              raise SystemExit("Missing Supabase configuration.")
+
+          def request(url, method="GET", data=None, content_type=None, extra=None):
+              headers = {
+                  "apikey": key,
+                  "Authorization": "Bearer " + key
+              }
+
+              if content_type:
+                  headers["Content-Type"] = content_type
+
+              if extra:
+                  headers.update(extra)
+
+              req = urllib.request.Request(
+                  url, data=data, method=method, headers=headers
+              )
+
+              with urllib.request.urlopen(req, timeout=120) as response:
+                  return response.read()
 
           query = urllib.parse.urlencode({
               "id": "eq." + job_id,
               "select": "id,user_id"
           })
-          req = urllib.request.Request(
-              base + "/rest/v1/apk_build_jobs?" + query,
-              headers={
-                  "apikey": key,
-                  "Authorization": "Bearer " + key
-              }
-          )
-          with urllib.request.urlopen(req) as r:
-              rows = json.loads(r.read())
+
+          rows = json.loads(request(
+              base + "/rest/v1/apk_build_jobs?" + query
+          ))
 
           if len(rows) != 1:
-              raise SystemExit("Build job not found")
+              raise SystemExit("Build job not found.")
 
-          apk = Path(
+          apk_file = Path(
               "app/build/outputs/apk/debug/app-debug.apk"
-          ).read_bytes()
+          )
+
+          if not apk_file.exists():
+              raise SystemExit("APK output file was not created.")
+
+          apk = apk_file.read_bytes()
+
+          if not apk:
+              raise SystemExit("APK output file is empty.")
+
           path = "outputs/{}/{}/app.apk".format(
               rows[0]["user_id"], job_id
           )
+
           encoded = urllib.parse.quote(path, safe="/")
 
-          req = urllib.request.Request(
+          request(
               base + "/storage/v1/object/apk-builds/" + encoded,
-              data=apk,
               method="POST",
-              headers={
-                  "apikey": key,
-                  "Authorization": "Bearer " + key,
-                  "Content-Type": "application/vnd.android.package-archive",
-                  "x-upsert": "true"
-              }
+              data=apk,
+              content_type="application/vnd.android.package-archive",
+              extra={"x-upsert": "true"}
           )
-          with urllib.request.urlopen(req) as r:
-              r.read()
 
           payload = json.dumps({
               "status": "complete",
               "apk_path": path,
               "error_message": None
-          }).encode()
+          }).encode("utf-8")
 
-          req = urllib.request.Request(
+          request(
               base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
-              data=payload,
               method="PATCH",
-              headers={
-                  "apikey": key,
-                  "Authorization": "Bearer " + key,
-                  "Content-Type": "application/json",
-                  "Prefer": "return=minimal"
-              }
+              data=payload,
+              content_type="application/json",
+              extra={"Prefer": "return=minimal"}
           )
-          with urllib.request.urlopen(req) as r:
-              r.read()
 
-          print("APK uploaded successfully.")
+          print("APK uploaded successfully to private Supabase storage.")
           PY
 
       - name: Mark build failed
@@ -220,17 +321,22 @@ jobs:
         continue-on-error: true
         run: |
           python3 - <<'PY'
-          import os, json, urllib.request
+          import os
+          import json
+          import urllib.request
+
           base = os.environ.get("SUPABASE_URL", "").rstrip("/")
           key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-          job = os.environ.get("JOB_ID", "")
-          if base and key and job:
+          job_id = os.environ.get("JOB_ID", "")
+
+          if base and key and job_id:
               body = json.dumps({
                   "status": "failed",
                   "error_message": "Build failed. Check GitHub Actions logs."
-              }).encode()
+              }).encode("utf-8")
+
               req = urllib.request.Request(
-                  base + "/rest/v1/apk_build_jobs?id=eq." + job,
+                  base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
                   data=body,
                   method="PATCH",
                   headers={
@@ -240,6 +346,9 @@ jobs:
                       "Prefer": "return=minimal"
                   }
               )
-              with urllib.request.urlopen(req) as r:
-                  r.read()
+
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  response.read()
+
+          print("Build failure status recorded when Supabase was available.")
           PY
