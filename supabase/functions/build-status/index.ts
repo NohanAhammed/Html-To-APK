@@ -1,96 +1,136 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const cors = {
-  "Access-Control-Allow-Origin": Deno.env.get("APP_ORIGIN") ?? "*",
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, apikey, content-type, x-client-info",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const reply = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data), {
+function reply(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
     status,
-    headers: { ...cors, "Content-Type": "application/json" },
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
   });
+}
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS")
-    return new Response("ok", { headers: cors });
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
 
-  if (req.method !== "POST")
-    return reply({ error: "Method not allowed" }, 405);
-
-  const url = Deno.env.get("SUPABASE_URL")!;
-  const anon = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-  const secret = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-  if (!secret)
-    return reply({ error: "Server is not configured" }, 503);
-
-  const token = (req.headers.get("Authorization") ?? "")
-    .replace(/^Bearer\s+/i, "");
-
-  if (!token) return reply({ error: "Sign in first" }, 401);
-
-  const userClient = createClient(url, anon, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth: { persistSession: false },
-  });
-
-  const { data, error } = await userClient.auth.getUser(token);
-
-  if (error || !data.user)
-    return reply({ error: "Invalid session" }, 401);
-
-  let body: { jobId?: string };
+  if (req.method !== "POST") {
+    return reply({ error: "Method not allowed. Use POST." }, 405);
+  }
 
   try {
-    body = await req.json();
-  } catch {
-    return reply({ error: "Invalid request" }, 400);
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+    if (!supabaseUrl || !anonKey || !serviceRoleKey) {
+      return reply({ error: "Server environment is not configured." }, 500);
+    }
+
+    const authHeader = req.headers.get("Authorization");
+
+    if (!authHeader?.startsWith("Bearer ")) {
+      return reply({ error: "Please sign in first." }, 401);
+    }
+
+    const userClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+
+    const {
+      data: { user },
+      error: authError,
+    } = await userClient.auth.getUser();
+
+    if (authError || !user) {
+      return reply({ error: "Invalid or expired login session." }, 401);
+    }
+
+    let body: { jobId?: string };
+
+    try {
+      body = await req.json();
+    } catch {
+      return reply({ error: "Request body must be valid JSON." }, 400);
+    }
+
+    const jobId = body.jobId;
+
+    if (
+      typeof jobId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)
+    ) {
+      return reply({ error: "A valid jobId is required." }, 400);
+    }
+
+    const admin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+
+    const { data: job, error: jobError } = await admin
+      .from("apk_build_jobs")
+      .select("id, user_id, status, error_message, apk_path, app_name, version")
+      .eq("id", jobId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (jobError) {
+      console.error("Job lookup failed:", jobError.message);
+      return reply({ error: "Could not check build status." }, 500);
+    }
+
+    if (!job) {
+      return reply({ error: "Build job not found." }, 404);
+    }
+
+    let downloadUrl: string | null = null;
+
+    if (job.status === "complete" && job.apk_path) {
+      const { data: signed, error: signedError } = await admin.storage
+        .from("apk-builds")
+        .createSignedUrl(job.apk_path, 3600);
+
+      if (signedError) {
+        console.error("Signed URL failed:", signedError.message);
+        return reply({
+          jobId: job.id,
+          status: job.status,
+          appName: job.app_name,
+          version: job.version,
+          downloadUrl: null,
+          error: "APK is ready, but its download link could not be created.",
+        });
+      }
+
+      downloadUrl = signed.signedUrl;
+    }
+
+    return reply({
+      jobId: job.id,
+      status: job.status,
+      appName: job.app_name,
+      version: job.version,
+      error: job.error_message ?? null,
+      downloadUrl,
+    });
+  } catch (error) {
+    console.error("Unexpected build-status error:", error);
+    return reply({ error: "An unexpected server error occurred." }, 500);
   }
-
-  if (
-    typeof body.jobId !== "string" ||
-    !/^[0-9a-f-]{36}$/i.test(body.jobId)
-  ) {
-    return reply({ error: "Invalid build ID" }, 400);
-  }
-
-  const admin = createClient(url, secret, {
-    auth: { persistSession: false },
-  });
-
-  const { data: job, error: jobError } = await admin
-    .from("apk_build_jobs")
-    .select("id, app_name, status, error_message, created_at, apk_path")
-    .eq("id", body.jobId)
-    .eq("user_id", data.user.id)
-    .maybeSingle();
-
-  if (jobError)
-    return reply({ error: "Could not check build status" }, 500);
-
-  if (!job)
-    return reply({ error: "Build not found" }, 404);
-
-  let downloadUrl: string | null = null;
-
-  if (job.status === "complete" && job.apk_path) {
-    const { data: signed, error: signedError } = await admin.storage
-      .from("apk-builds")
-      .createSignedUrl(job.apk_path, 300);
-
-    if (!signedError) downloadUrl = signed.signedUrl;
-  }
-
-  return reply({
-    jobId: job.id,
-    appName: job.app_name,
-    status: job.status,
-    error: job.error_message,
-    createdAt: job.created_at,
-    downloadUrl,
-  });
 });
