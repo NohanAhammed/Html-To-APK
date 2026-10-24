@@ -23,6 +23,41 @@ Deno.serve(async (req: Request) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, apikey, content-type, x-client-info",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+function reply(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+function safeFilename(appName: string, version: string) {
+  const name =
+    appName.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") ||
+    "MyApp";
+
+  const ver = version.replace(/[^A-Za-z0-9._-]+/g, "-");
+
+  return `${name}-v${ver}.apk`;
+}
+
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   if (req.method !== "POST") {
     return reply({ error: "Method not allowed. Use POST." }, 405);
   }
@@ -100,11 +135,19 @@ Deno.serve(async (req: Request) => {
     }
 
     let downloadUrl: string | null = null;
+    let downloadFilename: string | null = null;
 
     if (job.status === "complete" && job.apk_path) {
+      downloadFilename = safeFilename(
+        job.app_name || "MyApp",
+        job.version || "1.0.0"
+      );
+
       const { data: signed, error: signedError } = await admin.storage
         .from("apk-builds")
-        .createSignedUrl(job.apk_path, 3600);
+        .createSignedUrl(job.apk_path, 3600, {
+          download: downloadFilename,
+        });
 
       if (signedError) {
         console.error("Signed URL failed:", signedError.message);
@@ -128,6 +171,7 @@ Deno.serve(async (req: Request) => {
       version: job.version,
       error: job.error_message ?? null,
       downloadUrl,
+      downloadFilename,
     });
   } catch (error) {
     console.error("Unexpected build-status error:", error);
