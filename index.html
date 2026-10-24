@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#000000">
+<title>HTML to APK</title>
+<style>
+:root{color-scheme:dark;--bg:#000;--panel:#090909;--panel2:#0e0e0e;--line:#292929;--text:#e5e5e5;--muted:#929292;--soft:#bdbdbd;--white:#f5f5f5}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,input,select{font:inherit}
+.shell{max-width:760px;margin:0 auto;padding:26px 18px 50px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 0 26px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px;font-size:17px;font-weight:650;letter-spacing:-.3px}
+.brand-icon{width:36px;height:36px;border:1px solid #393939;border-radius:10px;display:grid;place-items:center;background:#080808}
+.brand-icon svg{width:20px;height:20px}
+.pill{font-size:11px;color:#aaa;border:1px solid #303030;border-radius:999px;padding:5px 9px;letter-spacing:.4px}
+.hero{padding:34px 0 26px}
+.eyebrow{color:#858585;text-transform:uppercase;letter-spacing:2px;font-size:10px;font-weight:700}
+h1{font-size:clamp(30px,7vw,43px);line-height:1.08;letter-spacing:-1.8px;margin:12px 0;color:#eee;font-weight:650}
+.hero p{color:var(--muted);max-width:500px;margin:12px 0 0;font-size:14px}
+.panel{border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:20px;margin-top:14px}
+.panel-head{display:flex;align-items:center;gap:11px;margin-bottom:18px}
+.num{height:27px;width:27px;border:1px solid #393939;border-radius:8px;display:grid;place-items:center;color:#ccc;font-size:12px}
+.panel h2{font-size:15px;margin:0;font-weight:600;letter-spacing:-.2px}
+.panel-head p{margin:2px 0 0;color:#777;font-size:12px}
+.field{display:flex;flex-direction:column;gap:7px;margin-bottom:16px}
+.field:last-child{margin-bottom:0}
+label,.field-label{font-size:12px;color:#bcbcbc;font-weight:550}
+input[type=text],input[type=number],select{width:100%;min-height:45px;border:1px solid #303030;border-radius:9px;background:#050505;color:#e4e4e4;padding:10px 12px;outline:none}
+input::placeholder{color:#595959}
+input:focus,select:focus{border-color:#666}
+.upload{border:1px dashed #3a3a3a;border-radius:12px;min-height:125px;display:flex;align-items:center;justify-content:center;text-align:center;padding:18px;background:#050505;cursor:pointer;transition:border-color .15s,background .15s}
+.upload:hover,.upload.drag{border-color:#777;background:#0a0a0a}
+.upload input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.upload .symbol{width:34px;height:34px;border:1px solid #303030;border-radius:10px;display:grid;place-items:center;margin:0 auto 9px;color:#ccc}
+.upload strong{display:block;font-size:13px;font-weight:600;color:#ddd}
+.upload small{display:block;color:#777;font-size:11px;margin-top:4px}
+.file-status{color:#aaa;font-size:12px;margin-top:9px;overflow-wrap:anywhere}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+.options{display:grid;gap:10px}
+.option{display:flex;align-items:center;justify-content:space-between;gap:18px;border:1px solid #252525;border-radius:10px;padding:13px;background:#050505}
+.option strong{display:block;font-size:13px;font-weight:550}
+.option small{display:block;color:#777;font-size:11px;margin-top:2px}
+.switch{position:relative;width:42px;height:24px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.track{position:absolute;inset:0;background:#292929;border:1px solid #414141;border-radius:99px;transition:.18s;cursor:pointer}
+.track:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#aaa;border-radius:50%;transition:.18s}
+.switch input:checked+.track{background:#d5d5d5;border-color:#d5d5d5}
+.switch input:checked+.track:before{transform:translateX(18px);background:#111}
+.hint{font-size:11px;color:#707070;margin:12px 0 0}
+.build{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;border:1px solid #eee;background:#e7e7e7;color:#080808;font-weight:700;border-radius:10px;padding:14px 18px;margin-top:18px;cursor:pointer;transition:background .15s,transform .15s}
+.build:hover{background:#fff}.build:active{transform:scale(.99)}
+.build:disabled{opacity:.5;cursor:not-allowed}
+.status{display:none;margin-top:13px;border:1px solid #292929;background:#080808;padding:13px;border-radius:10px;color:#aaa;font-size:12px}
+.status.show{display:block}
+.status strong{color:#ddd;display:block;margin-bottom:3px}
+.footer{color:#5f5f5f;font-size:11px;text-align:center;margin-top:25px}
+.footer span{color:#888}
+.preview{display:flex;align-items:center;gap:12px;margin-top:12px}
+.preview img{width:44px;height:44px;object-fit:cover;border-radius:11px;border:1px solid #303030;background:#111;display:none}
+.preview-text{font-size:12px;color:#777}
+@media(max-width:480px){.shell{padding:18px 13px 35px}.panel{padding:16px}.two{grid-template-columns:1fr;gap:0}.hero{padding-top:28px}.top{padding-bottom:19px}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <div class="brand">
+      <div class="brand-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#d5d5d5" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M9 7h6M9 11h6M9 15h3"/></svg>
+      </div>
+      <span>APK Builder</span>
+    </div>
+    <span class="pill">HTML → ANDROID</span>
+  </header>
+
+  <section class="hero">
+    <div class="eyebrow">Simple app packaging</div>
+    <h1>Turn your HTML<br>into an Android app.</h1>
+    <p>Upload your project, personalize the app, choose your display settings, and prepare an APK build.</p>
+  </section>
+
+  <form id="builderForm">
+    <section class="panel">
+      <div class="panel-head"><div class="num">01</div><div><h2>Upload your files</h2><p>Your website and app icon</p></div></div>
+      <div class="field">
+        <label for="htmlFile">HTML file</label>
+        <label class="upload" id="htmlDrop" for="htmlFile">
+          <input id="htmlFile" type="file" accept=".html,.htm,text/html" required>
+          <span><span class="symbol">↑</span><strong>Choose your HTML file</strong><small>HTML document · up to 20 MB recommended</small></span>
+        </label>
+        <div class="file-status" id="htmlStatus">No HTML file selected</div>
+      </div>
+      <div class="field">
+        <label for="logoFile">App logo (PNG)</label>
+        <label class="upload" id="logoDrop" for="logoFile">
+          <input id="logoFile" type="file" accept="image/png,.png">
+          <span><span class="symbol">▧</span><strong>Upload a PNG logo</strong><small>Square image recommended · transparent background supported</small></span>
+        </label>
+        <div class="preview"><img id="logoPreview" alt="Logo preview"><div class="preview-text" id="logoStatus">No logo selected</div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div class="num">02</div><div><h2>App details</h2><p>How your app appears on Android</p></div></div>
+      <div class="field"><label for="appName">App name</label><input id="appName" type="text" maxlength="40" placeholder="My Awesome App" required></div>
+      <div class="field"><label for="publisher">Publisher</label><input id="publisher" type="text" maxlength="80" placeholder="Your name or studio"></div>
+      <div class="two">
+        <div class="field"><label for="version">Version</label><input id="version" type="text" value="1.0.0" maxlength="20" placeholder="1.0.0" required></div>
+        <div class="field"><label for="packageId">Package ID</label><input id="packageId" type="text" value="com.example.myapp" maxlength="120" pattern="[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+" title="Use a format like com.example.myapp" required></div>
+      </div>
+      <p class="hint">Package ID must be unique for apps you plan to publish or update.</p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div class="num">03</div><div><h2>Display & permissions</h2><p>Choose how the app behaves</p></div></div>
+      <div class="options">
+        <div class="option"><div><strong>Full-screen mode</strong><small>Hide Android status and navigation bars where supported</small></div><label class="switch"><input id="fullscreen" type="checkbox"><span class="track"></span></label></div>
+        <div class="option"><div><strong>Allow screenshots</strong><small>Let users capture the app screen</small></div><label class="switch"><input id="screenshots" type="checkbox" checked><span class="track"></span></label></div>
+        <div class="option"><div><strong>Allow internet access</strong><small>Needed for online pages and web features</small></div><label class="switch"><input id="internet" type="checkbox" checked><span class="track"></span></label></div>
+      </div>
+      <p class="hint">Permissions are applied during the Android build. Your HTML file alone cannot configure Android permissions.</p>
+    </section>
+
+    <button class="build" id="buildButton" type="submit"><span>Prepare APK build</span><span aria-hidden="true">↗</span></button>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+  </form>
+  <footer class="footer">BLACK / MINIMAL INTERFACE <span>·</span> APK Builder UI prototype</footer>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// Set these two public values before publishing. Never put service-role keys here.
+const SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_OR_PUBLISHABLE_KEY";
+const configured = !SUPABASE_URL.includes("YOUR_PROJECT_REF") && !SUPABASE_ANON_KEY.includes("YOUR_SUPABASE");
+const $ = id => document.getElementById(id);
+let client = null, activeJobId = null;
+if (configured && window.supabase) client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const htmlFile = $('htmlFile'), logoFile = $('logoFile');
+htmlFile.addEventListener('change', () => { const f=htmlFile.files[0]; $('htmlStatus').textContent=f?`${f.name} · ${formatSize(f.size)}`:'No HTML file selected'; });
+logoFile.addEventListener('change', () => { const f=logoFile.files[0], p=$('logoPreview'); if(!f){p.style.display='none';$('logoStatus').textContent='No logo selected';return;} if(!f.name.toLowerCase().endsWith('.png')){showStatus('Logo must be a PNG image.');logoFile.value='';return;} p.src=URL.createObjectURL(f);p.style.display='block';$('logoStatus').textContent=`${f.name} · ${formatSize(f.size)}`; });
+function formatSize(n){return n<1048576?`${(n/1024).toFixed(0)} KB`:`${(n/1048576).toFixed(2)} MB`;}
+$('appName').addEventListener('input',()=>{if(!$('packageId').dataset.edited){const s=$('appName').value.toLowerCase().replace(/[^a-z0-9]+/g,'').slice(0,28)||'myapp';$('packageId').value='com.example.'+s;}});
+$('packageId').addEventListener('input',()=>$('packageId').dataset.edited='1');
+for(const [id,input] of [['htmlDrop',htmlFile],['logoDrop',logoFile]]){const el=$(id);el.addEventListener('dragover',e=>{e.preventDefault();el.classList.add('drag')});el.addEventListener('dragleave',()=>el.classList.remove('drag'));el.addEventListener('drop',e=>{e.preventDefault();el.classList.remove('drag');const f=e.dataTransfer.files[0];if(!f)return;const dt=new DataTransfer();dt.items.add(f);input.files=dt.files;input.dispatchEvent(new Event('change'));});}
+function showStatus(title,body=''){const s=$('status');s.classList.add('show');s.replaceChildren();const b=document.createElement('strong');b.textContent=title;s.append(b);if(body)s.append(document.createTextNode(body));}
+async function getSessionToken(){if(!client)throw new Error('Set your Supabase URL and public anon/publishable key in this HTML file first.');let {data:{session}}=await client.auth.getSession();if(!session){const r=await client.auth.signInAnonymously();if(r.error)throw r.error;session=r.data.session;}if(!session?.access_token)throw new Error('Enable Anonymous Sign-ins in Supabase Authentication.');return session.access_token;}
+$('builderForm').addEventListener('submit',async e=>{e.preventDefault();const html=htmlFile.files[0],logo=logoFile.files[0];if(!html)return;if(!/\.(html|htm)$/i.test(html.name)||html.size>20*1024*1024){showStatus('Choose an HTML file under 20 MB.');return;}if(logo&&(!logo.name.toLowerCase().endsWith('.png')||logo.size>5*1024*1024)){showStatus('Choose a PNG logo under 5 MB.');return;}
+const config={appName:$('appName').value.trim(),publisher:$('publisher').value.trim(),version:$('version').value.trim(),packageId:$('packageId').value.trim(),fullscreen:$('fullscreen').checked,screenshots:$('screenshots').checked,internet:$('internet').checked};if(!config.appName||!/^[0-9]+(\.[0-9]+){0,3}$/.test(config.version)||!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(config.packageId)){showStatus('Check app name, version, and package ID.');return;}
+const btn=$('buildButton');btn.disabled=true;btn.querySelector('span').textContent='Starting build…';try{const token=await getSessionToken(),form=new FormData();form.append('htmlFile',html);if(logo)form.append('logoFile',logo);form.append('config',JSON.stringify(config));const r=await fetch(SUPABASE_URL+'/functions/v1/start-build',{method:'POST',headers:{apikey:SUPABASE_ANON_KEY,Authorization:'Bearer '+token},body:form});const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not start build.');activeJobId=d.jobId;showStatus('Build queued.','Your Android APK is being built. Keep this page open.');pollStatus(token);}catch(err){showStatus('Could not start build.',err.message||String(err));btn.disabled=false;btn.querySelector('span').textContent='Build APK';}});
+async function pollStatus(token){try{const r=await fetch(SUPABASE_URL+'/functions/v1/build-status?jobId='+encodeURIComponent(activeJobId),{headers:{apikey:SUPABASE_ANON_KEY,Authorization:'Bearer '+token}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Status check failed.');if(d.status==='complete'&&d.downloadUrl){showStatus('APK ready.','Your app was compiled successfully.');const a=document.createElement('a');a.href=d.downloadUrl;a.textContent='Download APK';a.style.display='inline-block';a.style.marginTop='9px';a.style.color='#ddd';$('status').append(document.createElement('br'),a);const btn=$('buildButton');btn.disabled=false;btn.querySelector('span').textContent='Build another APK';return;}if(d.status==='failed'){showStatus('Build failed.',d.error||'Check the GitHub Actions run log.');const btn=$('buildButton');btn.disabled=false;btn.querySelector('span').textContent='Try again';return;}showStatus(d.status==='building'?'Building your APK…':'Build queued.','Status: '+d.status+'. Checking again in 7 seconds.');setTimeout(()=>pollStatus(token),7000);}catch(err){showStatus('Status check problem.',err.message||String(err));const btn=$('buildButton');btn.disabled=false;btn.querySelector('span').textContent='Retry';}}
+</script>
+</body>
+</html>
