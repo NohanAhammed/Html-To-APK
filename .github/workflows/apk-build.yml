@@ -1,1 +1,42 @@
 
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Supabase build job ID"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download project files
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          if [ -f scripts/requirements.txt ]; then
+            pip install -r scripts/requirements.txt
+          fi
+
+      - name: Check project files
+        run: |
+          echo "Checking HTML-to-APK converter files..."
+          test -f web/index.html || {
+            echo "Missing web/index.html"
+            exit 1
+          }
+          echo "Website file found."
+          echo "Android APK build steps still need to be configured."
+
