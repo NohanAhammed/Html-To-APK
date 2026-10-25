@@ -1,4 +1,3 @@
-
 name: Build Android APK
 
 on:
@@ -15,7 +14,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -40,17 +39,22 @@ jobs:
       - name: Install image tools
         run: python3 -m pip install --user Pillow
 
-      - name: Prepare Android app and launcher icon
+      - name: Prepare Android app, website and launcher icon
         shell: bash
         run: |
           python3 - <<'PY'
           import os
-          import json
           import re
+          import json
+          import stat
+          import shutil
+          import zipfile
+          import tempfile
           import urllib.request
           import urllib.parse
           import xml.etree.ElementTree as ET
-          from pathlib import Path
+
+          from pathlib import Path, PurePosixPath
           from io import BytesIO
           from PIL import Image, ImageOps, ImageDraw
 
@@ -71,13 +75,19 @@ jobs:
               h = dict(headers)
               if extra:
                   h.update(extra)
+
               body = None if data is None else (
                   data if isinstance(data, bytes)
                   else json.dumps(data).encode("utf-8")
               )
+
               req = urllib.request.Request(
-                  url, data=body, headers=h, method=method
+                  url,
+                  data=body,
+                  headers=h,
+                  method=method
               )
+
               with urllib.request.urlopen(req, timeout=120) as response:
                   return response.read()
 
@@ -85,7 +95,7 @@ jobs:
               "id": "eq." + job_id,
               "select": (
                   "id,user_id,app_name,version,package_id,"
-                  "html_path,logo_path,status"
+                  "html_path,website_zip_path,logo_path,status"
               )
           })
 
@@ -101,6 +111,8 @@ jobs:
           app_name = job.get("app_name")
           version = job.get("version")
           package_id = job.get("package_id")
+          html_path = job.get("html_path")
+          zip_path = job.get("website_zip_path")
           logo_path = job.get("logo_path")
 
           if not isinstance(app_name, str) or not app_name.strip():
@@ -117,32 +129,252 @@ jobs:
           ):
               raise SystemExit("Invalid Android package ID.")
 
+          # Exactly one website input must be provided.
+          if bool(html_path) == bool(zip_path):
+              raise SystemExit(
+                  "Provide exactly one website file: HTML or ZIP."
+              )
+
           request(
               base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
               "PATCH",
-              {"status": "building", "error_message": None},
+              {
+                  "status": "building",
+                  "error_message": None
+              },
               {"Prefer": "return=minimal"}
           )
 
           def download_storage(path):
               if not isinstance(path, str) or not path:
                   raise SystemExit("Uploaded file path is missing.")
+
               encoded = urllib.parse.quote(path, safe="/")
+
               return request(
                   base + "/storage/v1/object/apk-builds/" + encoded
               )
 
-          # Put the uploaded HTML into the Android WebView assets.
-          html = download_storage(job.get("html_path"))
-          if not html:
-              raise SystemExit("Uploaded HTML file is empty.")
-
           assets = Path("app/src/main/assets")
-          assets.mkdir(parents=True, exist_ok=True)
-          (assets / "index.html").write_bytes(html)
 
-          # Configure the app ID and version.
+          if assets.exists():
+              shutil.rmtree(assets)
+
+          assets.mkdir(parents=True, exist_ok=True)
+
+          # --------------------------------------------------
+          # HTML MODE
+          # --------------------------------------------------
+
+          if html_path:
+              html = download_storage(html_path)
+
+              if not html:
+                  raise SystemExit("Uploaded HTML file is empty.")
+
+              (assets / "index.html").write_bytes(html)
+
+              print("HTML website prepared successfully.")
+
+          # --------------------------------------------------
+          # ZIP MODE
+          # --------------------------------------------------
+
+          else:
+              zip_bytes = download_storage(zip_path)
+
+              if not zip_bytes:
+                  raise SystemExit("Uploaded ZIP file is empty.")
+
+              try:
+                  archive = zipfile.ZipFile(BytesIO(zip_bytes))
+              except zipfile.BadZipFile:
+                  raise SystemExit("The uploaded file is not a valid ZIP.")
+
+              with archive:
+                  members = archive.infolist()
+
+                  if len(members) > 10000:
+                      raise SystemExit(
+                          "ZIP contains too many files. Maximum: 10000."
+                      )
+
+                  files = []
+                  total_size = 0
+
+                  # Validate paths and archive contents before copying.
+                  for info in members:
+                      name = info.filename.replace("\\", "/")
+
+                      if not name or "\x00" in name:
+                          raise SystemExit(
+                              "ZIP contains an invalid file path."
+                          )
+
+                      if name.startswith("/"):
+                          raise SystemExit(
+                              "ZIP contains an absolute file path."
+                          )
+
+                      parts = name.split("/")
+
+                      if any(part == ".." for part in parts):
+                          raise SystemExit(
+                              "ZIP contains an unsafe directory path."
+                          )
+
+                      if parts[0].endswith(":"):
+                          raise SystemExit(
+                              "ZIP contains an unsafe drive path."
+                          )
+
+                      if info.flag_bits & 0x1:
+                          raise SystemExit(
+                              "Password-protected ZIP files are not supported."
+                          )
+
+                      mode = info.external_attr >> 16
+
+                      if stat.S_ISLNK(mode):
+                          raise SystemExit(
+                              "ZIP symbolic links are not supported."
+                          )
+
+                      if info.is_dir():
+                          continue
+
+                      total_size += info.file_size
+
+                      if total_size > 200 * 1024 * 1024:
+                          raise SystemExit(
+                              "ZIP expands beyond the 200 MB safety limit."
+                          )
+
+                      files.append((info, name))
+
+                  # Locate the website's index.html.
+                  candidates = [
+                      name for info, name in files
+                      if PurePosixPath(name).name.lower() == "index.html"
+                  ]
+
+                  if not candidates:
+                      raise SystemExit(
+                          "No index.html was found in the uploaded ZIP."
+                      )
+
+                  # Prefer an index.html at the ZIP root.
+                  root_candidates = [
+                      name for name in candidates
+                      if "/" not in name
+                  ]
+
+                  if root_candidates:
+                      chosen_index = root_candidates[0]
+                  else:
+                      # Many website ZIPs contain one top-level folder,
+                      # such as dist/index.html or my-site/index.html.
+                      candidates.sort(
+                          key=lambda name: (
+                              name.count("/"),
+                              len(name)
+                          )
+                      )
+
+                      best_depth = candidates[0].count("/")
+
+                      best_candidates = [
+                          name for name in candidates
+                          if name.count("/") == best_depth
+                      ]
+
+                      if len(best_candidates) != 1:
+                          raise SystemExit(
+                              "ZIP contains multiple possible website "
+                              "entry points. Put the correct index.html "
+                              "at the ZIP root and try again."
+                          )
+
+                      chosen_index = best_candidates[0]
+
+                  root_prefix = str(
+                      PurePosixPath(chosen_index).parent
+                  )
+
+                  if root_prefix == ".":
+                      root_prefix = ""
+
+                  print("Website entry point:", chosen_index)
+
+                  copied = 0
+
+                  for info, name in files:
+                      if root_prefix:
+                          prefix = root_prefix + "/"
+
+                          if not name.startswith(prefix):
+                              continue
+
+                          relative_name = name[len(prefix):]
+                      else:
+                          relative_name = name
+
+                      if not relative_name:
+                          continue
+
+                      relative = PurePosixPath(relative_name)
+
+                      if (
+                          relative.is_absolute()
+                          or any(
+                              part in ("", ".", "..")
+                              for part in relative.parts
+                          )
+                      ):
+                          raise SystemExit(
+                              "ZIP contains an unsafe relative path."
+                          )
+
+                      destination = assets.joinpath(*relative.parts)
+
+                      # Confirm the output remains inside the assets folder.
+                      if not destination.resolve().is_relative_to(
+                          assets.resolve()
+                      ):
+                          raise SystemExit(
+                              "ZIP contains a path outside the assets folder."
+                          )
+
+                      destination.parent.mkdir(
+                          parents=True,
+                          exist_ok=True
+                      )
+
+                      with archive.open(info, "r") as source:
+                          with destination.open("wb") as target:
+                              shutil.copyfileobj(
+                                  source,
+                                  target,
+                                  length=1024 * 1024
+                              )
+
+                      copied += 1
+
+                  if not (assets / "index.html").is_file():
+                      raise SystemExit(
+                          "The selected website root did not produce "
+                          "an index.html file."
+                      )
+
+                  print("ZIP website extracted successfully.")
+                  print("Website files copied:", copied)
+
+          # --------------------------------------------------
+          # CONFIGURE ANDROID APPLICATION
+          # --------------------------------------------------
+
           gradle_file = Path("app/build.gradle")
+
           if not gradle_file.exists():
               raise SystemExit("app/build.gradle was not found.")
 
@@ -154,6 +386,7 @@ jobs:
               gradle_text,
               count=1
           )
+
           if count_id != 1:
               raise SystemExit("Could not update applicationId.")
 
@@ -163,42 +396,75 @@ jobs:
               gradle_text,
               count=1
           )
+
           if count_version != 1:
               raise SystemExit("Could not update versionName.")
 
-          gradle_file.write_text(gradle_text, encoding="utf-8")
+          gradle_file.write_text(
+              gradle_text,
+              encoding="utf-8"
+          )
 
-          # Generate Android launcher icon resources from the PNG.
-          # If no logo was uploaded, create a simple fallback icon.
+          # --------------------------------------------------
+          # GENERATE LAUNCHER ICON
+          # --------------------------------------------------
+
           if logo_path:
               logo_bytes = download_storage(logo_path)
+
               try:
-                  source = Image.open(BytesIO(logo_bytes)).convert("RGBA")
+                  source = Image.open(
+                      BytesIO(logo_bytes)
+                  ).convert("RGBA")
                   source.load()
               except Exception as exc:
-                  raise SystemExit("Uploaded logo is not a valid image: " + str(exc))
+                  raise SystemExit(
+                      "Uploaded logo is not a valid image: " + str(exc)
+                  )
           else:
-              source = Image.new("RGBA", (512, 512), (15, 15, 15, 255))
+              source = Image.new(
+                  "RGBA",
+                  (512, 512),
+                  (15, 15, 15, 255)
+              )
+
               draw = ImageDraw.Draw(source)
+
               draw.rounded_rectangle(
                   (48, 48, 464, 464),
                   radius=100,
                   outline=(225, 225, 225, 255),
                   width=18
               )
-              draw.text((194, 155), "A", fill=(240, 240, 240, 255))
 
-          # Fit the complete logo without cropping it.
-          square = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
-          fitted = ImageOps.contain(
-              source, (448, 448), method=Image.Resampling.LANCZOS
+              draw.text(
+                  (194, 155),
+                  "A",
+                  fill=(240, 240, 240, 255)
+              )
+
+          square = Image.new(
+              "RGBA",
+              (512, 512),
+              (0, 0, 0, 0)
           )
+
+          fitted = ImageOps.contain(
+              source,
+              (448, 448),
+              method=Image.Resampling.LANCZOS
+          )
+
           square.alpha_composite(
               fitted,
-              ((512 - fitted.width) // 2, (512 - fitted.height) // 2)
+              (
+                  (512 - fitted.width) // 2,
+                  (512 - fitted.height) // 2
+              )
           )
 
           res = Path("app/src/main/res")
+
           sizes = {
               "mipmap-mdpi": 48,
               "mipmap-hdpi": 72,
@@ -210,59 +476,100 @@ jobs:
           for folder, size in sizes.items():
               directory = res / folder
               directory.mkdir(parents=True, exist_ok=True)
-              icon = square.resize(
-                  (size, size), Image.Resampling.LANCZOS
-              )
-              icon.save(directory / "ic_launcher.png", format="PNG")
-              icon.save(directory / "ic_launcher_round.png", format="PNG")
 
-          # Set launcher icon and app label in the manifest.
+              icon = square.resize(
+                  (size, size),
+                  Image.Resampling.LANCZOS
+              )
+
+              icon.save(
+                  directory / "ic_launcher.png",
+                  format="PNG"
+              )
+
+              icon.save(
+                  directory / "ic_launcher_round.png",
+                  format="PNG"
+              )
+
+          # --------------------------------------------------
+          # UPDATE ANDROID MANIFEST
+          # --------------------------------------------------
+
           manifest = Path("app/src/main/AndroidManifest.xml")
+
           if not manifest.exists():
               raise SystemExit("AndroidManifest.xml was not found.")
 
-          raw = manifest.read_bytes().lstrip(b"\xef\xbb\xbf \t\r\n")
+          raw = manifest.read_bytes().lstrip(
+              b"\xef\xbb\xbf \t\r\n"
+          )
+
           android_ns = "http://schemas.android.com/apk/res/android"
           ET.register_namespace("android", android_ns)
 
           try:
               root = ET.fromstring(raw)
           except ET.ParseError as exc:
-              raise SystemExit("Invalid AndroidManifest.xml: " + str(exc))
+              raise SystemExit(
+                  "Invalid AndroidManifest.xml: " + str(exc)
+              )
 
           if root.tag != "manifest":
               raise SystemExit("Invalid manifest root element.")
 
           application = root.find("application")
-          if application is None:
-              raise SystemExit("Manifest has no application element.")
 
-          application.set("{" + android_ns + "}label", app_name)
-          application.set("{" + android_ns + "}icon", "@mipmap/ic_launcher")
+          if application is None:
+              raise SystemExit(
+                  "Manifest has no application element."
+              )
+
+          application.set(
+              "{" + android_ns + "}label",
+              app_name
+          )
+
+          application.set(
+              "{" + android_ns + "}icon",
+              "@mipmap/ic_launcher"
+          )
+
           application.set(
               "{" + android_ns + "}roundIcon",
               "@mipmap/ic_launcher_round"
           )
 
           ET.ElementTree(root).write(
-              str(manifest), encoding="utf-8", xml_declaration=True
+              str(manifest),
+              encoding="utf-8",
+              xml_declaration=True
           )
 
-          # Validate generated manifest.
           ET.parse(str(manifest))
 
-          print("HTML copied into app assets.")
-          print("Package ID and version configured.")
-          print("Launcher icons generated.")
-          print("Manifest validated.")
+          print("Android manifest validated.")
+          print("Application configuration complete.")
 
-          # Save the final APK path and desired filename for upload.
-          safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", app_name).strip("-")
-          safe_name = safe_name or "MyApp"
-          safe_version = re.sub(r"[^A-Za-z0-9._-]+", "-", version)
+          safe_name = re.sub(
+              r"[^A-Za-z0-9_-]+",
+              "-",
+              app_name
+          ).strip("-") or "MyApp"
+
+          safe_version = re.sub(
+              r"[^A-Za-z0-9._-]+",
+              "-",
+              version
+          )
+
           apk_filename = f"{safe_name}-v{safe_version}.apk"
 
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+          with open(
+              os.environ["GITHUB_ENV"],
+              "a",
+              encoding="utf-8"
+          ) as f:
               f.write("APK_FILENAME=" + apk_filename + "\n")
           PY
 
@@ -289,15 +596,23 @@ jobs:
               "Authorization": "Bearer " + key
           }
 
-          def request(url, method="GET", data=None, content_type=None, extra=None):
+          def request(url, method="GET", data=None,
+                      content_type=None, extra=None):
               h = dict(headers)
+
               if content_type:
                   h["Content-Type"] = content_type
+
               if extra:
                   h.update(extra)
+
               req = urllib.request.Request(
-                  url, data=data, method=method, headers=h
+                  url,
+                  data=data,
+                  method=method,
+                  headers=h
               )
+
               with urllib.request.urlopen(req, timeout=120) as response:
                   return response.read()
 
@@ -309,17 +624,25 @@ jobs:
           rows = json.loads(request(
               base + "/rest/v1/apk_build_jobs?" + query
           ))
+
           if len(rows) != 1:
               raise SystemExit("Build job not found.")
 
-          apk_file = Path("app/build/outputs/apk/debug/app-debug.apk")
+          apk_file = Path(
+              "app/build/outputs/apk/debug/app-debug.apk"
+          )
+
           if not apk_file.exists() or apk_file.stat().st_size == 0:
               raise SystemExit("APK output was not created.")
 
           apk = apk_file.read_bytes()
+
           path = "outputs/{}/{}/{}".format(
-              rows[0]["user_id"], job_id, filename
+              rows[0]["user_id"],
+              job_id,
+              filename
           )
+
           encoded = urllib.parse.quote(path, safe="/")
 
           request(
@@ -363,7 +686,9 @@ jobs:
           if base and key and job_id:
               payload = json.dumps({
                   "status": "failed",
-                  "error_message": "Build failed. Check GitHub Actions logs."
+                  "error_message": (
+                      "Build failed. Check GitHub Actions logs."
+                  )
               }).encode("utf-8")
 
               req = urllib.request.Request(
