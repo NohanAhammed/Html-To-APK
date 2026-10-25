@@ -1,400 +1,610 @@
-Replace your existing "web/index.html" with the corrected code below. The important change is that the Supabase key is configured once, and the client initialization and authentication errors are handled separately.
-
-<!DOCTYPE html>
-<html lang="en">
+<!DOCTYPE html><html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#080808">
-  <title>HTML to APK Converter</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #080808;
-      --panel: #121212;
-      --border: #303030;
-      --text: #f3f3f3;
-      --muted: #a1a1a1;
-      --accent: #e5e5e5;
-    }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#080808">
+<title>HTML to APK Converter</title><style>
+:root {
+  color-scheme: dark;
+  --bg: #080808;
+  --panel: #111;
+  --line: #292929;
+  --text: #f2f2f2;
+  --muted: #a3a3a3;
+  --success: #9be5b0;
+  --error: #ff9c9c;
+}
 
-    * { box-sizing: border-box; }
+* { box-sizing: border-box; }
 
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 15px/1.5 system-ui, sans-serif;
-    }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(ellipse at 50% -15%, #292929, transparent 45%), var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
 
-    main {
-      width: min(100% - 28px, 620px);
-      margin: 38px auto;
-    }
+.wrap {
+  width: min(760px, 100%);
+  margin: auto;
+  padding: 26px 16px 48px;
+}
 
-    header { margin-bottom: 25px; }
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 30px;
+}
 
-    .eyebrow {
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 2px;
-    }
+.logo {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #555;
+  border-radius: 15px;
+  background: linear-gradient(145deg, #303030, #0b0b0b);
+  box-shadow: inset 0 1px #ffffff22;
+  font-size: 22px;
+  font-weight: 800;
+}
 
-    h1 {
-      margin: 8px 0;
-      font-size: clamp(27px, 6vw, 38px);
-      line-height: 1.15;
-    }
+.brand { font-size: 18px; font-weight: 750; }
+.subtitle { color: var(--muted); font-size: 12px; }
 
-    p { color: var(--muted); }
+h1 {
+  margin: 0 0 12px;
+  font-size: clamp(30px, 7vw, 44px);
+  letter-spacing: -1.5px;
+  line-height: 1.08;
+}
 
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 20px;
-      margin-bottom: 16px;
-    }
+.intro {
+  max-width: 600px;
+  color: #bbb;
+  margin-bottom: 25px;
+}
 
-    h2 {
-      font-size: 17px;
-      margin: 0 0 14px;
-    }
+.panel {
+  margin: 16px 0;
+  padding: 21px;
+  border: 1px solid var(--line);
+  border-radius: 21px;
+  background: linear-gradient(155deg, #171717, #0d0d0d);
+  box-shadow: 0 18px 55px #0005;
+}
 
-    label {
-      display: block;
-      margin: 14px 0 6px;
-      font-weight: 600;
-      font-size: 13px;
-    }
+h2 { font-size: 16px; margin: 0 0 17px; }
 
-    input[type="text"],
-    input[type="file"] {
-      display: block;
-      width: 100%;
-      min-width: 0;
-      padding: 12px;
-      background: #090909;
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      font: inherit;
-    }
+.field { margin-bottom: 17px; }
+.field:last-child { margin-bottom: 0; }
 
-    .hint {
-      font-size: 12px;
-      color: var(--muted);
-      margin: 7px 0 0;
-    }
+label, .label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 13px;
+  font-weight: 650;
+}
 
-    .options {
-      display: grid;
-      gap: 13px;
-      margin-top: 15px;
-    }
+input[type="text"],
+input[type="number"],
+input:not([type]),
+select {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #363636;
+  border-radius: 12px;
+  background: #090909;
+  color: var(--text);
+  font: inherit;
+}
 
-    .check {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-weight: 400;
-      margin: 0;
-    }
+input:focus {
+  outline: 1px solid #888;
+  border-color: #888;
+}
 
-    .check input {
-      width: 18px;
-      height: 18px;
-      accent-color: white;
-    }
+.upload {
+  padding: 16px;
+  border: 1px dashed #555;
+  border-radius: 15px;
+  background: #0a0a0a;
+}
 
-    button {
-      width: 100%;
-      border: 0;
-      border-radius: 12px;
-      padding: 14px 18px;
-      background: var(--accent);
-      color: #090909;
-      font-size: 15px;
-      font-weight: 750;
-      cursor: pointer;
-    }
+.upload input {
+  max-width: 100%;
+  font-size: 13px;
+}
 
-    button:disabled {
-      opacity: .5;
-      cursor: not-allowed;
-    }
+.hint, .fileinfo {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 
-    .secondary {
-      background: #222;
-      border: 1px solid var(--border);
-      color: var(--text);
-      margin-top: 10px;
-    }
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
 
-    .notice, .status {
-      border: 1px solid #414141;
-      border-radius: 12px;
-      padding: 13px;
-      font-size: 13px;
-      background: #0b0b0b;
-      overflow-wrap: anywhere;
-    }
+.checks { display: grid; gap: 15px; }
 
-    .status {
-      display: none;
-      margin-top: 16px;
-    }
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #ddd;
+  font-size: 13px;
+}
 
-    .status.show { display: block; }
+.check input {
+  width: 17px;
+  height: 17px;
+  margin-top: 3px;
+  accent-color: white;
+}
 
-    progress {
-      width: 100%;
-      height: 7px;
-      margin-top: 10px;
-      accent-color: white;
-    }
+.check strong { display: block; }
+.check small { display: block; color: var(--muted); margin-top: 3px; }
 
-    a { color: white; }
+.button {
+  width: 100%;
+  padding: 14px 18px;
+  border: 1px solid #fff;
+  border-radius: 13px;
+  background: #eee;
+  color: #111;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
 
-    footer {
-      text-align: center;
-      font-size: 12px;
-      color: var(--muted);
-      padding: 10px 0 30px;
-    }
+.button:disabled { opacity: .5; cursor: wait; }
 
-    @media (max-width: 420px) {
-      main { margin-top: 22px; }
-      .panel { padding: 15px; }
-    }
-  </style>
-</head>
+.status {
+  display: none;
+  margin-top: 15px;
+  padding: 14px;
+  border: 1px solid #333;
+  border-radius: 13px;
+  background: #0a0a0a;
+  overflow-wrap: anywhere;
+}
 
-<body>
-<main>
-  <header>
-    <div class="eyebrow">Android build studio</div>
-    <h1>HTML to APK</h1>
-    <p>Turn your website into an installable Android application.</p>
-  </header>
+.status.show { display: block; }
+.status.error { border-color: #653838; color: var(--error); }
+.status.success { border-color: #31543a; color: var(--success); }
 
-  <form id="buildForm">
-    <section class="panel">
-      <h2>01 · Website files</h2>
+.progress {
+  height: 5px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #292929;
+}
 
-      <label for="websiteFile">Website HTML or ZIP</label>
-      <input id="websiteFile" type="file"
-        accept=".html,.htm,.zip" required>
-      <p class="hint">
-        ZIP uploads require a compatible server-side build workflow.
-        A single HTML file should be self-contained.
-      </p>
+.bar {
+  width: 0;
+  height: 100%;
+  background: #eee;
+  transition: width .3s;
+}
 
-      <label for="logoFile">App icon (optional PNG)</label>
-      <input id="logoFile" type="file" accept=".png,image/png">
-      <p class="hint">Maximum logo size: 5 MB.</p>
-    </section>
+.download {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid #555;
+  border-radius: 10px;
+  color: #fff;
+  text-decoration: none;
+}
 
-    <section class="panel">
-      <h2>02 · App information</h2>
+.retention {
+  padding: 14px;
+  border: 1px solid #333;
+  border-radius: 13px;
+  background: #101010;
+  color: #bbb;
+  font-size: 12px;
+}
 
-      <label for="appName">App name</label>
-      <input id="appName" type="text" maxlength="40"
-        placeholder="My Website" required>
+.footer {
+  margin-top: 22px;
+  color: #777;
+  font-size: 12px;
+  text-align: center;
+}
 
-      <label for="publisher">Publisher</label>
-      <input id="publisher" type="text" maxlength="80"
-        placeholder="Your name">
+.hidden { display: none !important; }
 
-      <label for="version">Version</label>
-      <input id="version" type="text" value="1.0.0"
-        pattern="[0-9]+(\.[0-9]+){0,3}" required>
-
-      <label for="packageId">Android package ID</label>
-      <input id="packageId" type="text"
-        value="com.example.myapp"
-        pattern="[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+"
-        required>
-    </section>
-
-    <section class="panel">
-      <h2>03 · Build options</h2>
-      <div class="options">
-        <label class="check">
-          <input type="checkbox" id="fullscreen">
-          Fullscreen app
-        </label>
-
-        <label class="check">
-          <input type="checkbox" id="allowScreenshots" checked>
-          Allow screenshots
-        </label>
-
-        <label class="check">
-          <input type="checkbox" id="allowInternet" checked>
-          Allow internet access
-        </label>
-
-        <label class="check">
-          <input type="checkbox" id="includeReadme">
-          Include README file
-        </label>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>04 · Privacy and storage</h2>
-      <div class="notice">
-        <strong>24-hour retention target</strong><br>
-        Uploaded files, generated APKs and build records are intended
-        to be deleted automatically after 24 hours. This only becomes
-        effective after the server-side cleanup task is deployed and tested.
-      </div>
-    </section>
-
-    <button type="submit" id="buildButton">Build Android APK</button>
-  </form>
-
-  <div id="status" class="status" role="status" aria-live="polite">
-    <strong id="statusTitle">Ready</strong>
-    <p id="statusMessage"></p>
-    <progress id="progress" max="100" value="0"></progress>
-    <p id="downloadArea"></p>
-    <button type="button" id="retryButton" class="secondary" hidden>
-      Try again
-    </button>
+@media (max-width: 540px) {
+  .wrap { padding: 20px 12px 35px; }
+  .panel { padding: 17px; border-radius: 18px; }
+  .grid { grid-template-columns: 1fr; gap: 0; }
+}
+</style></head><body>
+<main class="wrap"><header>
+  <div class="logo">A</div>
+  <div>
+    <div class="brand">HTML APK Converter</div>
+    <div class="subtitle">Package your website as an Android app</div>
   </div>
+</header><h1>Your website.<br>As an Android app.</h1><p class="intro">
+Upload your HTML file or website ZIP, configure your app, and submit an APK build.
+</p><form id="buildForm"><section class="panel">
+  <h2>01 · Website files</h2>  <div class="field">
+    <label for="htmlFile">Single HTML file</label>
+    <div class="upload">
+      <input id="htmlFile" type="file" accept=".html,.htm,text/html">
+      <div class="hint">Use a self-contained HTML file or one that loads its assets online.</div>
+      <div class="fileinfo" id="htmlInfo">No HTML file selected</div>
+    </div>
+  </div>  <div class="field">
+    <label for="zipFile">Or upload a website ZIP</label>
+    <div class="upload">
+      <input id="zipFile" type="file" accept=".zip,application/zip">
+      <div class="hint">Include index.html, CSS, JavaScript, images, and other website files. ZIP support must also be implemented in the server-side build workflow.</div>
+      <div class="fileinfo" id="zipInfo">No ZIP file selected</div>
+    </div>
+  </div>  <div class="field">
+    <label for="logoFile">App icon (optional PNG)</label>
+    <div class="upload">
+      <input id="logoFile" type="file" accept=".png,image/png">
+      <div class="hint">A square PNG is recommended.</div>
+      <div class="fileinfo" id="logoInfo">No logo selected</div>
+    </div>
+  </div>
+</section><section class="panel">
+  <h2>02 · App details</h2>  <div class="field">
+    <label for="appName">App name</label>
+    <input id="appName" type="text" maxlength="40" placeholder="My Website App" required>
+  </div>  <div class="grid">
+    <div class="field">
+      <label for="publisher">Publisher</label>
+      <input id="publisher" type="text" maxlength="80" placeholder="Your name or studio">
+    </div><div class="field">
+  <label for="version">Version</label>
+  <input id="version" type="text" value="1.0.0"
+    pattern="[0-9]+(\.[0-9]+){0,3}" required>
+</div>
 
-  <footer>HTML APK Converter</footer>
-</main>
+  </div>  <div class="field">
+    <label for="packageId">Android package ID</label>
+    <input id="packageId" type="text" value="com.friends.app"
+      pattern="[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+"
+      title="Example: com.example.myapp" required>
+    <div class="hint">Choose a unique package ID for each app.</div>
+  </div>
+</section><section class="panel">
+  <h2>03 · Build options</h2>  <div class="checks">
+    <label class="check">
+      <input id="fullscreen" type="checkbox">
+      <span><strong>Fullscreen mode</strong>
+      <small>Hide the Android status bar. The build workflow must implement this option.</small></span>
+    </label><label class="check">
+  <input id="allowScreenshots" type="checkbox" checked>
+  <span><strong>Allow screenshots</strong>
+  <small>Permit screenshots and screen recording. The build workflow must apply this setting.</small></span>
+</label>
 
-<script type="module">
-  import { createClient } from
-    "https://esm.sh/@supabase/supabase-js@2";
+<label class="check">
+  <input id="allowInternet" type="checkbox" checked>
+  <span><strong>Allow internet access</strong>
+  <small>Required for Supabase, APIs, and online content.</small></span>
+</label>
 
-  const SUPABASE_URL =
-    "https://hjsqxgtjczxtfgqozybx.supabase.co";
+  </div>
+</section><section class="panel">
+  <div class="retention">
+    <strong>24-hour data retention</strong><br>
+    Automatic deletion requires a configured server-side cleanup job in Supabase. This page does not itself delete uploaded files, generated APKs, or database records.
+  </div>  <div style="height:16px"></div><button class="button" id="buildButton" type="submit">Build my APK</button>
 
-  const SUPABASE_PUBLISHABLE_KEY =
-    "sb_publishable_oaVKK5lCoivI1v3XWjqNA_zLPBEli6";
+  <div id="status" class="status" role="status" aria-live="polite"></div>  <div id="progressWrap" class="progress hidden">
+    <div id="progressBar" class="bar"></div>
+  </div>
+</section></form><p class="footer">
+Keep a backup of your source files. Online services require an internet connection.
+</p></main><script type="module">
+import { createClient } from
+  "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
-  const form = document.querySelector("#buildForm");
-  const button = document.querySelector("#buildButton");
-  const statusBox = document.querySelector("#status");
-  const statusTitle = document.querySelector("#statusTitle");
-  const statusMessage = document.querySelector("#statusMessage");
-  const progress = document.querySelector("#progress");
-  const downloadArea = document.querySelector("#downloadArea");
-  const retryButton = document.querySelector("#retryButton");
+/*
+  IMPORTANT:
+  These values must belong to the SAME Supabase project.
+  Never put a secret/service-role key in this public HTML.
+*/
+const SUPABASE_URL =
+  "https://hjsqxgtjczxtfgqozybx.supabase.co";
 
-  const client = createClient(
-    SUPABASE_URL,
-    SUPABASE_PUBLISHABLE_KEY
-  );
+const SUPABASE_PUBLISHABLE_KEY =
+  "sb_publishable_oaVKK5lCoivI1v3XWjqNA_zLPBEli6";
 
-  function showStatus(title, message, percent = 0) {
-    statusBox.classList.add("show");
-    statusTitle.textContent = title;
-    statusMessage.textContent = message;
-    progress.value = percent;
+const form = document.getElementById("buildForm");
+const button = document.getElementById("buildButton");
+const statusBox = document.getElementById("status");
+const progressWrap = document.getElementById("progressWrap");
+const progressBar = document.getElementById("progressBar");
+
+const htmlInput = document.getElementById("htmlFile");
+const zipInput = document.getElementById("zipFile");
+const logoInput = document.getElementById("logoFile");
+
+let client = null;
+let pollTimer = null;
+
+function showStatus(message, type = "") {
+  statusBox.replaceChildren(document.createTextNode(message));
+  statusBox.className = ("status show " + type).trim();
+}
+
+function showDownload(url, filename) {
+  statusBox.replaceChildren();
+  statusBox.className = "status show success";
+  statusBox.append(document.createTextNode("Your APK is ready."));
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.className = "download";
+  link.textContent = "Download " + (filename || "APK");
+  link.rel = "noopener";
+
+  statusBox.append(document.createElement("br"), link);
+}
+
+function formatSize(size) {
+  if (size < 1024) return size + " B";
+  if (size < 1024 * 1024) return (size / 1024).toFixed(1) + " KB";
+  return (size / 1024 / 1024).toFixed(2) + " MB";
+}
+
+function updateFileInfo(input, target, emptyText) {
+  const file = input.files?.[0];
+  document.getElementById(target).textContent =
+    file ? file.name + " · " + formatSize(file.size) : emptyText;
+}
+
+htmlInput.addEventListener("change", () => {
+  updateFileInfo(htmlInput, "htmlInfo", "No HTML file selected");
+
+  if (htmlInput.files.length) zipInput.value = "";
+
+  updateFileInfo(zipInput, "zipInfo", "No ZIP file selected");
+});
+
+zipInput.addEventListener("change", () => {
+  updateFileInfo(zipInput, "zipInfo", "No ZIP file selected");
+
+  if (zipInput.files.length) htmlInput.value = "";
+
+  updateFileInfo(htmlInput, "htmlInfo", "No HTML file selected");
+});
+
+logoInput.addEventListener("change", () => {
+  updateFileInfo(logoInput, "logoInfo", "No logo selected");
+});
+
+function stopPolling() {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+function getSupabaseClient() {
+  if (!SUPABASE_URL.startsWith("https://") ||
+      !SUPABASE_PUBLISHABLE_KEY.startsWith("sb_publishable_")) {
+    throw new Error(
+      "Supabase configuration is missing. Check the project URL and publishable key."
+    );
   }
 
-  function showError(error) {
-    const message = error?.message || "An unexpected error occurred.";
-    showStatus("Build failed", message);
-    button.disabled = false;
-    retryButton.hidden = false;
-  }
-
-  function validateFiles(website, logo) {
-    if (!website) throw new Error("Choose an HTML or ZIP file.");
-
-    const name = website.name.toLowerCase();
-    if (!/\.(html?|zip)$/.test(name)) {
-      throw new Error("Choose an HTML, HTM or ZIP file.");
-    }
-
-    if (website.size === 0 || website.size > 100 * 1024 * 1024) {
-      throw new Error("Website file must be under 100 MB.");
-    }
-
-    if (logo &&
-        (!logo.name.toLowerCase().endsWith(".png") ||
-         logo.size === 0 ||
-         logo.size > 5 * 1024 * 1024)) {
-      throw new Error("The logo must be a valid PNG under 5 MB.");
-    }
-  }
-
-  async function getSession() {
-    let { data, error } = await client.auth.getSession();
-    if (error) throw new Error("Session error: " + error.message);
-
-    if (data.session) return data.session;
-
-    const result = await client.auth.signInAnonymously();
-
-    if (result.error) {
-      const message = result.error.message || "Unknown authentication error";
-
-      if (/invalid api key/i.test(message)) {
-        throw new Error(
-          "Supabase rejected the API key. Copy the current publishable key " +
-          "from this exact project's dashboard and verify the project URL."
-        );
+  if (!client) {
+    client = createClient(
+      SUPABASE_URL,
+      SUPABASE_PUBLISHABLE_KEY,
+      {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true
+        }
       }
-
-      throw new Error(
-        "Supabase sign-in failed: " + message +
-        ". Check whether Anonymous Sign-Ins are enabled."
-      );
-    }
-
-    if (!result.data.session) {
-      throw new Error("Supabase did not return an authenticated session.");
-    }
-
-    return result.data.session;
+    );
   }
 
-  async function startBuild() {
-    const website = document.querySelector("#websiteFile").files[0];
-    const logo = document.querySelector("#logoFile").files[0];
+  return client;
+}
 
-    validateFiles(website, logo);
+function explainError(error) {
+  const message = String(error?.message || error || "Unknown error");
 
-    const config = {
-      appName: document.querySelector("#appName").value.trim(),
-      publisher: document.querySelector("#publisher").value.trim(),
-      version: document.querySelector("#version").value.trim(),
-      packageId: document.querySelector("#packageId").value.trim(),
-      fullscreen: document.querySelector("#fullscreen").checked,
-      allowScreenshots:
-        document.querySelector("#allowScreenshots").checked,
-      allowInternet: document.querySelector("#allowInternet").checked,
-      includeReadme: document.querySelector("#includeReadme").checked
-    };
+  if (/invalid api key|invalidapikey|api key/i.test(message)) {
+    return "Supabase rejected the API key. Open your Supabase project, go to Project Settings → API Keys, and replace SUPABASE_PUBLISHABLE_KEY in this HTML with the exact Publishable key from this project. Do not use a secret/service-role key.";
+  }
 
-    const session = await getSession();
+  if (/anonymous|signup is disabled|signups not allowed/i.test(message)) {
+    return "Supabase authentication failed. If this app uses anonymous sign-in, check Authentication settings and make sure anonymous sign-in is enabled.";
+  }
 
-    const body = new FormData();
+  if (/failed to fetch|networkerror/i.test(message)) {
+    return "Could not reach Supabase. Check your internet connection, project URL, and whether the Edge Functions are deployed.";
+  }
 
-    // Preserve the field names used by the existing start-build function.
-    body.append("htmlFile", website);
-    body.append("websiteFile", website);
-    if (logo) body.append("logoFile", logo);
-    body.append("config", JSON.stringify(config));
+  return message;
+}
 
-    showStatus("Uploading project", "Uploading your selected files.", 10);
+async function ensureSession(supabase) {
+  const { data, error } = await supabase.auth.getSession();
 
+  if (error) throw error;
+  if (data.session) return data.session;
+
+  const result = await supabase.auth.signInAnonymously();
+
+  if (result.error) throw result.error;
+  if (!result.data.session) {
+    throw new Error("Supabase did not return an authenticated session.");
+  }
+
+  return result.data.session;
+}
+
+async function checkBuild(jobId, accessToken, attempts = 0) {
+  try {
     const response = await fetch(
-      `${SUPABASE_URL}/functions/v1/start-build`,
+      SUPABASE_URL + "/functions/v1/build-status",
       {
         method: "POST",
         headers: {
-          apikey: SUPABASE_PUBLISHABLE_KEY,
-          Authorization: `Bearer ${session.access_token}`
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + accessToken,
+          "apikey": SUPABASE_PUBLISHABLE_KEY
+        },
+        body: JSON.stringify({ jobId })
+      }
+    );
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || result.message ||
+        "Build status failed with HTTP " + response.status
+      );
+    }
+
+    if (result.status === "complete" && result.downloadUrl) {
+      progressBar.style.width = "100%";
+
+      showDownload(
+        result.downloadUrl,
+        result.downloadFilename ||
+          ((result.appName || "app") + "-" +
+           (result.version || "1.0.0") + ".apk")
+      );
+
+      button.disabled = false;
+      button.textContent = "Build another APK";
+      return;
+    }
+
+    if (result.status === "failed") {
+      throw new Error(result.error || "The APK build failed. Check GitHub Actions logs.");
+    }
+
+    progressBar.style.width = Math.min(92, 15 + attempts * 4) + "%";
+
+    showStatus(
+      "Build status: " + (result.status || "queued") +
+      ". Checking again automatically…"
+    );
+
+    pollTimer = setTimeout(
+      () => checkBuild(jobId, accessToken, attempts + 1),
+      7000
+    );
+
+  } catch (error) {
+    showStatus(explainError(error), "error");
+    button.disabled = false;
+    button.textContent = "Try again";
+    progressWrap.classList.add("hidden");
+  }
+}
+
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  stopPolling();
+
+  const htmlFile = htmlInput.files?.[0];
+  const zipFile = zipInput.files?.[0];
+  const logoFile = logoInput.files?.[0];
+
+  if ((!htmlFile && !zipFile) || (htmlFile && zipFile)) {
+    showStatus("Choose either one HTML file or one website ZIP.", "error");
+    return;
+  }
+
+  if (htmlFile && !/\.html?$/i.test(htmlFile.name)) {
+    showStatus("Choose a valid .html or .htm file.", "error");
+    return;
+  }
+
+  if (zipFile && !/\.zip$/i.test(zipFile.name)) {
+    showStatus("Choose a valid ZIP file.", "error");
+    return;
+  }
+
+  if (htmlFile && htmlFile.size > 20 * 1024 * 1024) {
+    showStatus("The HTML file must be 20 MB or smaller.", "error");
+    return;
+  }
+
+  if (zipFile && zipFile.size > 50 * 1024 * 1024) {
+    showStatus("The ZIP file must be 50 MB or smaller.", "error");
+    return;
+  }
+
+  if (logoFile &&
+      (!/\.png$/i.test(logoFile.name) ||
+       logoFile.size > 5 * 1024 * 1024)) {
+    showStatus("The logo must be a PNG no larger than 5 MB.", "error");
+    return;
+  }
+
+  if (!form.reportValidity()) return;
+
+  button.disabled = true;
+  button.textContent = "Connecting…";
+  progressWrap.classList.remove("hidden");
+  progressBar.style.width = "5%";
+  showStatus("Connecting to Supabase…");
+
+  try {
+    const supabase = getSupabaseClient();
+
+    // Verify that the public API key is accepted before uploading files.
+    const { error: keyCheckError } =
+      await supabase.auth.getSession();
+
+    if (keyCheckError) throw keyCheckError;
+
+    const session = await ensureSession(supabase);
+
+    const config = {
+      appName: document.getElementById("appName").value.trim(),
+      publisher: document.getElementById("publisher").value.trim(),
+      version: document.getElementById("version").value.trim(),
+      packageId: document.getElementById("packageId").value.trim(),
+      fullscreen: document.getElementById("fullscreen").checked,
+      allowScreenshots:
+        document.getElementById("allowScreenshots").checked,
+      allowInternet: document.getElementById("allowInternet").checked
+    };
+
+    const body = new FormData();
+
+    if (htmlFile) body.append("htmlFile", htmlFile, htmlFile.name);
+    if (zipFile) body.append("zipFile", zipFile, zipFile.name);
+    if (logoFile) body.append("logoFile", logoFile, logoFile.name);
+
+    body.append("config", JSON.stringify(config));
+
+    progressBar.style.width = "18%";
+    button.textContent = "Uploading…";
+    showStatus("Uploading your website and creating the build job…");
+
+    const response = await fetch(
+      SUPABASE_URL + "/functions/v1/start-build",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + session.access_token,
+          "apikey": SUPABASE_PUBLISHABLE_KEY
         },
         body
       }
@@ -405,87 +615,28 @@ Replace your existing "web/index.html" with the corrected code below. The import
     if (!response.ok) {
       throw new Error(
         result.error || result.message ||
-        `Upload failed with HTTP ${response.status}.`
+        "Build request failed with HTTP " + response.status
       );
     }
 
     if (!result.jobId) {
-      throw new Error("The server did not return a build job ID.");
-    }
-
-    return { session, jobId: result.jobId };
-  }
-
-  async function pollBuild(session, jobId) {
-    for (let attempt = 0; attempt < 120; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 7000));
-
-      showStatus(
-        "Building your APK",
-        "Waiting for the Android build to finish.",
-        Math.min(95, 15 + Math.floor(attempt / 120 * 80))
+      throw new Error(
+        "The server did not return a job ID. Check that the start-build Edge Function is deployed and configured."
       );
-
-      const response = await fetch(
-        `${SUPABASE_URL}/functions/v1/build-status`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            apikey: SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${session.access_token}`
-          },
-          body: JSON.stringify({ jobId })
-        }
-      );
-
-      const result = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(
-          result.error || `Status check failed: HTTP ${response.status}.`
-        );
-      }
-
-      if (result.status === "failed") {
-        throw new Error(result.error || "The Android build failed.");
-      }
-
-      if (result.status === "complete" && result.downloadUrl) {
-        showStatus("APK ready", "Your APK is ready to download.", 100);
-
-        const link = document.createElement("a");
-        link.href = result.downloadUrl;
-        link.textContent =
-          "Download " + (result.downloadFilename || "your APK");
-        link.rel = "noopener";
-        downloadArea.replaceChildren(link);
-        return;
-      }
     }
 
-    throw new Error(
-      "The build is taking too long. Check GitHub Actions for its status."
-    );
+    progressBar.style.width = "25%";
+    button.textContent = "Building APK…";
+    showStatus("Build queued. Keep this page open while the APK is prepared.");
+
+    await checkBuild(result.jobId, session.access_token);
+
+  } catch (error) {
+    showStatus(explainError(error), "error");
+    button.disabled = false;
+    button.textContent = "Try again";
+    progressWrap.classList.add("hidden");
   }
-
-  form.addEventListener("submit", async event => {
-    event.preventDefault();
-
-    button.disabled = true;
-    retryButton.hidden = true;
-    downloadArea.replaceChildren();
-
-    try {
-      const { session, jobId } = await startBuild();
-      await pollBuild(session, jobId);
-      button.disabled = false;
-    } catch (error) {
-      showError(error);
-    }
-  });
-
-  retryButton.addEventListener("click", () => form.requestSubmit());
-</script>
-</body>
+});
+</script></body>
 </html>
