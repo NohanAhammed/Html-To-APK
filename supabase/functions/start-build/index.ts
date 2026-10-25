@@ -17,6 +17,33 @@ function out(data: unknown, status = 200) {
   });
 }
 
+function validWebsiteUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 2048) return null;
+
+  try {
+    const parsed = new URL(value.trim());
+
+    if (
+      parsed.protocol !== "https:" ||
+      !parsed.hostname.includes(".") ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port && parsed.port !== "443" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname.endsWith(".localhost") ||
+      parsed.hostname.endsWith(".local") ||
+      /^\d{1,3}(\.\d{1,3}){3}$/.test(parsed.hostname) ||
+      parsed.hostname.includes(":")
+    ) {
+      return null;
+    }
+
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: cors });
@@ -58,7 +85,7 @@ Deno.serve(async (req) => {
     return out({ error: "Invalid session." }, 401);
   }
 
-  // Read the uploaded files.
+  // Parse multipart form data.
   let form: FormData;
 
   try {
@@ -71,10 +98,59 @@ Deno.serve(async (req) => {
   const zip = form.get("zipFile");
   const logo = form.get("logoFile");
 
-  // Require exactly one website file.
-  if ((html instanceof File) === (zip instanceof File)) {
+  // Read the settings sent by index.html.
+  let config: Record<string, unknown>;
+
+  try {
+    const rawConfig = form.get("config");
+    config = JSON.parse(
+      typeof rawConfig === "string" ? rawConfig : "{}",
+    );
+
+    if (
+      !config ||
+      typeof config !== "object" ||
+      Array.isArray(config)
+    ) {
+      throw new Error("Invalid configuration");
+    }
+  } catch {
+    return out({ error: "Invalid app settings." }, 400);
+  }
+
+  // Accept the URL either as a separate form field or in config.
+  const rawWebsiteUrl =
+    form.get("websiteUrl") ?? config.websiteUrl ?? "";
+
+  let websiteUrl: string | null = null;
+
+  if (
+    typeof rawWebsiteUrl === "string" &&
+    rawWebsiteUrl.trim() !== ""
+  ) {
+    websiteUrl = validWebsiteUrl(rawWebsiteUrl);
+
+    if (!websiteUrl) {
+      return out({
+        error: "Enter a valid public HTTPS website URL.",
+      }, 400);
+    }
+  }
+
+  // Require exactly one source.
+  const hasHtml = html instanceof File && html.size > 0;
+  const hasZip = zip instanceof File && zip.size > 0;
+  const hasUrl = websiteUrl !== null;
+
+  if (
+    Number(hasHtml) +
+      Number(hasZip) +
+      Number(hasUrl) !==
+    1
+  ) {
     return out({
-      error: "Choose exactly one HTML file or website ZIP.",
+      error:
+        "Choose exactly one source: website URL, HTML file, or ZIP file.",
     }, 400);
   }
 
@@ -85,7 +161,7 @@ Deno.serve(async (req) => {
       html.size > 20 * 1024 * 1024)
   ) {
     return out({
-      error: "HTML must be under 20 MB.",
+      error: "HTML must be between 1 byte and 20 MB.",
     }, 400);
   }
 
@@ -96,40 +172,51 @@ Deno.serve(async (req) => {
       zip.size > 50 * 1024 * 1024)
   ) {
     return out({
-      error: "Website ZIP must be under 50 MB.",
+      error: "Website ZIP must be between 1 byte and 50 MB.",
     }, 400);
   }
 
-  if (
-    logo !== null &&
-    (!(logo instanceof File) ||
-      (!/\.png$/i.test(logo.name) && logo.type !== "image/png") ||
-      logo.size > 5 * 1024 * 1024)
-  ) {
-    return out({
-      error: "App icon must be a PNG under 5 MB.",
-    }, 400);
+  if (logo !== null) {
+    if (
+      !(logo instanceof File) ||
+      !/\.png$/i.test(logo.name) ||
+      logo.size < 1 ||
+      logo.size > 5 * 1024 * 1024
+    ) {
+      return out({
+        error: "App icon must be a PNG between 1 byte and 5 MB.",
+      }, 400);
+    }
   }
 
-  // Validate the app settings.
-  let config: Record<string, unknown>;
+  // Validate app settings.
+  const appName =
+    typeof config.appName === "string"
+      ? config.appName.trim()
+      : "";
 
-  try {
-    config = JSON.parse(String(form.get("config") ?? "{}"));
-  } catch {
-    return out({ error: "Invalid app settings." }, 400);
-  }
+  const publisher =
+    typeof config.publisher === "string"
+      ? config.publisher.trim().slice(0, 80)
+      : "";
 
-  const appName = String(config.appName ?? "").trim();
-  const publisher = String(config.publisher ?? "").trim().slice(0, 80);
-  const version = String(config.version ?? "1.0.0").trim();
-  const packageId = String(config.packageId ?? "").trim();
+  const version =
+    typeof config.version === "string"
+      ? config.version.trim()
+      : "1.0.0";
+
+  const packageId =
+    typeof config.packageId === "string"
+      ? config.packageId.trim()
+      : "";
 
   if (
     !appName ||
     appName.length > 40 ||
     !/^[0-9]+(\.[0-9]+){0,3}$/.test(version) ||
-    !/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageId)
+    !/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(
+      packageId,
+    )
   ) {
     return out({
       error: "Check app name, version, and package ID.",
@@ -145,17 +232,17 @@ Deno.serve(async (req) => {
     `inputs/${authData.user.id}/${crypto.randomUUID()}`;
 
   const htmlPath =
-    html instanceof File ? `${root}/index.html` : null;
+    hasHtml ? `${root}/index.html` : null;
 
   const zipPath =
-    zip instanceof File ? `${root}/website.zip` : null;
+    hasZip ? `${root}/website.zip` : null;
 
   const logoPath =
     logo instanceof File ? `${root}/logo.png` : null;
 
   const uploaded: string[] = [];
 
-  // Upload the selected files to private Supabase Storage.
+  // Upload HTML, ZIP and logo files to private Storage.
   try {
     if (html instanceof File && htmlPath) {
       const result = await admin.storage
@@ -163,7 +250,7 @@ Deno.serve(async (req) => {
         .upload(
           htmlPath,
           new Uint8Array(await html.arrayBuffer()),
-          { contentType: "text/html" },
+          { contentType: "text/html", upsert: false },
         );
 
       if (result.error) throw result.error;
@@ -176,20 +263,20 @@ Deno.serve(async (req) => {
         .upload(
           zipPath,
           new Uint8Array(await zip.arrayBuffer()),
-          { contentType: "application/zip" },
+          { contentType: "application/zip", upsert: false },
         );
 
       if (result.error) throw result.error;
       uploaded.push(zipPath);
     }
 
-    if (logo instanceof File && logoPath) {
+    if (logo instanceof File && logoPath && logo instanceof File) {
       const result = await admin.storage
         .from("apk-builds")
         .upload(
           logoPath,
           new Uint8Array(await logo.arrayBuffer()),
-          { contentType: "image/png" },
+          { contentType: "image/png", upsert: false },
         );
 
       if (result.error) throw result.error;
@@ -200,10 +287,10 @@ Deno.serve(async (req) => {
       await admin.storage.from("apk-builds").remove(uploaded);
     }
 
+    console.error("Storage upload failed:", error);
+
     return out({
-      error: `Upload failed: ${
-        error instanceof Error ? error.message : "Storage error"
-      }`,
+      error: "Upload failed. Check your Supabase Storage configuration.",
     }, 500);
   }
 
@@ -220,8 +307,13 @@ Deno.serve(async (req) => {
       fullscreen: config.fullscreen === true,
       allow_screenshots: config.allowScreenshots !== false,
       allow_internet: config.allowInternet !== false,
+      include_readme: config.includeReadme !== false,
+
+      // Exactly one of these source fields is populated.
+      website_url: websiteUrl,
       html_path: htmlPath,
       website_zip_path: zipPath,
+
       logo_path: logoPath,
       status: "queued",
     });
@@ -234,11 +326,12 @@ Deno.serve(async (req) => {
     console.error("Build job insert failed:", insertError.message);
 
     return out({
-      error: "Could not create build job. Check the database schema.",
+      error:
+        "Could not create build job. Check the apk_build_jobs database columns.",
     }, 500);
   }
 
-  // Trigger the GitHub Actions APK build.
+  // Dispatch the existing GitHub Actions workflow.
   const githubToken = Deno.env.get("GITHUB_TOKEN");
   const repository = Deno.env.get("GITHUB_REPOSITORY");
 
@@ -260,25 +353,49 @@ Deno.serve(async (req) => {
     }, 503);
   }
 
-  const response = await fetch(
-    `https://api.github.com/repos/${repository}/actions/workflows/apk-build.yml/dispatches`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-        "User-Agent": "html-apk-converter",
+  let response: Response;
+
+  try {
+    response = await fetch(
+      `https://api.github.com/repos/${repository}/actions/workflows/apk-build.yml/dispatches`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+          "User-Agent": "html-apk-converter",
+        },
+        body: JSON.stringify({
+          ref: "main",
+          inputs: { job_id: jobId },
+        }),
       },
-      body: JSON.stringify({
-        ref: "main",
-        inputs: { job_id: jobId },
-      }),
-    },
-  );
+    );
+  } catch (error) {
+    console.error("GitHub dispatch request failed:", error);
+
+    await admin
+      .from("apk_build_jobs")
+      .update({
+        status: "failed",
+        error_message: "Could not contact GitHub Actions.",
+      })
+      .eq("id", jobId);
+
+    return out({
+      error: "Could not contact GitHub Actions.",
+    }, 502);
+  }
 
   if (!response.ok) {
+    console.error(
+      "GitHub dispatch failed:",
+      response.status,
+      await response.text(),
+    );
+
     await admin
       .from("apk_build_jobs")
       .update({
@@ -288,7 +405,8 @@ Deno.serve(async (req) => {
       .eq("id", jobId);
 
     return out({
-      error: `GitHub dispatch failed (${response.status}). Check your GitHub token and repository settings.`,
+      error:
+        `GitHub dispatch failed (${response.status}). Check your GitHub token, repository settings, and workflow file.`,
     }, 502);
   }
 
