@@ -18,7 +18,9 @@ function out(data: unknown, status = 200) {
 }
 
 function validWebsiteUrl(value: unknown): string | null {
-  if (typeof value !== "string" || value.length > 2048) return null;
+  if (typeof value !== "string" || value.trim().length > 2048) {
+    return null;
+  }
 
   try {
     const parsed = new URL(value.trim());
@@ -28,7 +30,7 @@ function validWebsiteUrl(value: unknown): string | null {
       !parsed.hostname.includes(".") ||
       parsed.username ||
       parsed.password ||
-      parsed.port && parsed.port !== "443" ||
+      (parsed.port && parsed.port !== "443") ||
       parsed.hostname === "localhost" ||
       parsed.hostname.endsWith(".localhost") ||
       parsed.hostname.endsWith(".local") ||
@@ -44,6 +46,10 @@ function validWebsiteUrl(value: unknown): string | null {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: cors });
@@ -53,39 +59,39 @@ Deno.serve(async (req) => {
     return out({ error: "Method not allowed." }, 405);
   }
 
-  const url = Deno.env.get("SUPABASE_URL");
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const publicKey =
     Deno.env.get("SUPABASE_ANON_KEY") ??
     Deno.env.get("SUPABASE_PUBLISHABLE_KEY");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-  if (!url || !publicKey || !serviceKey) {
+  if (!supabaseUrl || !publicKey || !serviceKey) {
     return out({ error: "Server configuration is incomplete." }, 503);
   }
 
-  // Verify the user's session.
-  const token = (req.headers.get("Authorization") ?? "")
-    .replace(/^Bearer\s+/i, "");
+  // Authenticate the user.
+  const authorization = req.headers.get("Authorization") ?? "";
+  const token = authorization.replace(/^Bearer\s+/i, "").trim();
 
   if (!token) {
     return out({ error: "Sign in first." }, 401);
   }
 
-  const userClient = createClient(url, publicKey, {
+  const userClient = createClient(supabaseUrl, publicKey, {
     global: {
       headers: { Authorization: `Bearer ${token}` },
     },
-    auth: { persistSession: false },
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 
   const { data: authData, error: authError } =
     await userClient.auth.getUser(token);
 
   if (authError || !authData.user) {
-    return out({ error: "Invalid session." }, 401);
+    return out({ error: "Invalid session. Please sign in again." }, 401);
   }
 
-  // Parse multipart form data.
+  // Read the submitted form.
   let form: FormData;
 
   try {
@@ -95,39 +101,30 @@ Deno.serve(async (req) => {
   }
 
   const html = form.get("htmlFile");
-  const zip = form.get("zipFile");
   const logo = form.get("logoFile");
 
-  // Read the settings sent by index.html.
   let config: Record<string, unknown>;
 
   try {
     const rawConfig = form.get("config");
-    config = JSON.parse(
+    const parsed: unknown = JSON.parse(
       typeof rawConfig === "string" ? rawConfig : "{}",
     );
 
-    if (
-      !config ||
-      typeof config !== "object" ||
-      Array.isArray(config)
-    ) {
-      throw new Error("Invalid configuration");
+    if (!isRecord(parsed)) {
+      throw new Error("Invalid settings");
     }
+
+    config = parsed;
   } catch {
     return out({ error: "Invalid app settings." }, 400);
   }
 
-  // Accept the URL either as a separate form field or in config.
-  const rawWebsiteUrl =
-    form.get("websiteUrl") ?? config.websiteUrl ?? "";
-
+  // Accept a URL from the dedicated field or settings object.
+  const rawWebsiteUrl = form.get("websiteUrl") ?? config.websiteUrl ?? "";
   let websiteUrl: string | null = null;
 
-  if (
-    typeof rawWebsiteUrl === "string" &&
-    rawWebsiteUrl.trim() !== ""
-  ) {
+  if (typeof rawWebsiteUrl === "string" && rawWebsiteUrl.trim()) {
     websiteUrl = validWebsiteUrl(rawWebsiteUrl);
 
     if (!websiteUrl) {
@@ -137,42 +134,25 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Require exactly one source.
+  // Only one source is allowed: website URL OR HTML file.
   const hasHtml = html instanceof File && html.size > 0;
-  const hasZip = zip instanceof File && zip.size > 0;
   const hasUrl = websiteUrl !== null;
 
-  if (
-    Number(hasHtml) +
-      Number(hasZip) +
-      Number(hasUrl) !==
-    1
-  ) {
+  if (Number(hasHtml) + Number(hasUrl) !== 1) {
     return out({
-      error:
-        "Choose exactly one source: website URL, HTML file, or ZIP file.",
+      error: "Choose exactly one source: a website URL or an HTML file.",
     }, 400);
   }
 
   if (
-    html instanceof File &&
-    (!/\.(html|htm)$/i.test(html.name) ||
+    hasHtml &&
+    (!(html instanceof File) ||
+      !/\.(html|htm)$/i.test(html.name) ||
       html.size < 1 ||
       html.size > 20 * 1024 * 1024)
   ) {
     return out({
-      error: "HTML must be between 1 byte and 20 MB.",
-    }, 400);
-  }
-
-  if (
-    zip instanceof File &&
-    (!/\.zip$/i.test(zip.name) ||
-      zip.size < 1 ||
-      zip.size > 50 * 1024 * 1024)
-  ) {
-    return out({
-      error: "Website ZIP must be between 1 byte and 50 MB.",
+      error: "Choose an HTML file between 1 byte and 20 MB.",
     }, 400);
   }
 
@@ -191,9 +171,7 @@ Deno.serve(async (req) => {
 
   // Validate app settings.
   const appName =
-    typeof config.appName === "string"
-      ? config.appName.trim()
-      : "";
+    typeof config.appName === "string" ? config.appName.trim() : "";
 
   const publisher =
     typeof config.publisher === "string"
@@ -201,48 +179,34 @@ Deno.serve(async (req) => {
       : "";
 
   const version =
-    typeof config.version === "string"
-      ? config.version.trim()
-      : "1.0.0";
+    typeof config.version === "string" ? config.version.trim() : "1.0.0";
 
   const packageId =
-    typeof config.packageId === "string"
-      ? config.packageId.trim()
-      : "";
+    typeof config.packageId === "string" ? config.packageId.trim() : "";
 
   if (
     !appName ||
     appName.length > 40 ||
     !/^[0-9]+(\.[0-9]+){0,3}$/.test(version) ||
-    !/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(
-      packageId,
-    )
+    !/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageId)
   ) {
     return out({
-      error: "Check app name, version, and package ID.",
+      error: "Check the app name, version, and package ID.",
     }, 400);
   }
 
-  const admin = createClient(url, serviceKey, {
-    auth: { persistSession: false },
+  const admin = createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
 
   const jobId = crypto.randomUUID();
-  const root =
-    `inputs/${authData.user.id}/${crypto.randomUUID()}`;
+  const root = `inputs/${authData.user.id}/${crypto.randomUUID()}`;
 
-  const htmlPath =
-    hasHtml ? `${root}/index.html` : null;
-
-  const zipPath =
-    hasZip ? `${root}/website.zip` : null;
-
-  const logoPath =
-    logo instanceof File ? `${root}/logo.png` : null;
-
+  const htmlPath = hasHtml ? `${root}/index.html` : null;
+  const logoPath = logo instanceof File ? `${root}/logo.png` : null;
   const uploaded: string[] = [];
 
-  // Upload HTML, ZIP and logo files to private Storage.
+  // Upload the optional HTML and logo to private Storage.
   try {
     if (html instanceof File && htmlPath) {
       const result = await admin.storage
@@ -257,20 +221,7 @@ Deno.serve(async (req) => {
       uploaded.push(htmlPath);
     }
 
-    if (zip instanceof File && zipPath) {
-      const result = await admin.storage
-        .from("apk-builds")
-        .upload(
-          zipPath,
-          new Uint8Array(await zip.arrayBuffer()),
-          { contentType: "application/zip", upsert: false },
-        );
-
-      if (result.error) throw result.error;
-      uploaded.push(zipPath);
-    }
-
-    if (logo instanceof File && logoPath && logo instanceof File) {
+    if (logo instanceof File && logoPath) {
       const result = await admin.storage
         .from("apk-builds")
         .upload(
@@ -290,11 +241,11 @@ Deno.serve(async (req) => {
     console.error("Storage upload failed:", error);
 
     return out({
-      error: "Upload failed. Check your Supabase Storage configuration.",
+      error: "Upload failed. Check the apk-builds Storage bucket.",
     }, 500);
   }
 
-  // Create the build job.
+  // Create the job using the fields read by apk-build.yml.
   const { error: insertError } = await admin
     .from("apk_build_jobs")
     .insert({
@@ -308,12 +259,9 @@ Deno.serve(async (req) => {
       allow_screenshots: config.allowScreenshots !== false,
       allow_internet: config.allowInternet !== false,
       include_readme: config.includeReadme !== false,
-
-      // Exactly one of these source fields is populated.
       website_url: websiteUrl,
       html_path: htmlPath,
-      website_zip_path: zipPath,
-
+      website_zip_path: null,
       logo_path: logoPath,
       status: "queued",
     });
@@ -327,11 +275,11 @@ Deno.serve(async (req) => {
 
     return out({
       error:
-        "Could not create build job. Check the apk_build_jobs database columns.",
+        "Could not create the build job. Check the apk_build_jobs table columns.",
     }, 500);
   }
 
-  // Dispatch the existing GitHub Actions workflow.
+  // Dispatch the GitHub Actions workflow.
   const githubToken = Deno.env.get("GITHUB_TOKEN");
   const repository = Deno.env.get("GITHUB_REPOSITORY");
 
@@ -353,10 +301,8 @@ Deno.serve(async (req) => {
     }, 503);
   }
 
-  let response: Response;
-
   try {
-    response = await fetch(
+    const response = await fetch(
       `https://api.github.com/repos/${repository}/actions/workflows/apk-build.yml/dispatches`,
       {
         method: "POST",
@@ -373,6 +319,23 @@ Deno.serve(async (req) => {
         }),
       },
     );
+
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error("GitHub dispatch failed:", response.status, detail);
+
+      await admin
+        .from("apk_build_jobs")
+        .update({
+          status: "failed",
+          error_message: `GitHub dispatch failed (${response.status}).`,
+        })
+        .eq("id", jobId);
+
+      return out({
+        error: `GitHub dispatch failed (${response.status}). Check the token, repository, and workflow name.`,
+      }, 502);
+    }
   } catch (error) {
     console.error("GitHub dispatch request failed:", error);
 
@@ -384,34 +347,8 @@ Deno.serve(async (req) => {
       })
       .eq("id", jobId);
 
-    return out({
-      error: "Could not contact GitHub Actions.",
-    }, 502);
+    return out({ error: "Could not contact GitHub Actions." }, 502);
   }
 
-  if (!response.ok) {
-    console.error(
-      "GitHub dispatch failed:",
-      response.status,
-      await response.text(),
-    );
-
-    await admin
-      .from("apk_build_jobs")
-      .update({
-        status: "failed",
-        error_message: `GitHub dispatch failed (${response.status}).`,
-      })
-      .eq("id", jobId);
-
-    return out({
-      error:
-        `GitHub dispatch failed (${response.status}). Check your GitHub token, repository settings, and workflow file.`,
-    }, 502);
-  }
-
-  return out({
-    jobId,
-    status: "queued",
-  }, 202);
+  return out({ jobId, status: "queued" }, 202);
 });
