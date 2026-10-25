@@ -1,3 +1,4 @@
+
 name: Build Android APK
 
 on:
@@ -22,7 +23,7 @@ jobs:
       JOB_ID: ${{ inputs.job_id }}
 
     steps:
-      - name: Download project
+      - name: Checkout project
         uses: actions/checkout@v4
 
       - name: Set up Java
@@ -37,26 +38,16 @@ jobs:
           gradle-version: "8.7"
 
       - name: Install image tools
-        run: python3 -m pip install --user Pillow
+        run: python3 -m pip install Pillow
 
-      - name: Prepare Android app, website and launcher icon
+      - name: Prepare app
         shell: bash
         run: |
           python3 - <<'PY'
-          import os
-          import re
-          import json
-          import stat
-          import shutil
-          import zipfile
-          import tempfile
-          import urllib.request
-          import urllib.parse
-          import xml.etree.ElementTree as ET
-
-          from pathlib import Path, PurePosixPath
+          import os, re, json, urllib.request, urllib.parse, shutil
+          from pathlib import Path
           from io import BytesIO
-          from PIL import Image, ImageOps, ImageDraw
+          from PIL import Image, ImageOps
 
           base = os.environ["SUPABASE_URL"].rstrip("/")
           key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -75,515 +66,326 @@ jobs:
               h = dict(headers)
               if extra:
                   h.update(extra)
-
-              body = None if data is None else (
-                  data if isinstance(data, bytes)
-                  else json.dumps(data).encode("utf-8")
-              )
-
+              body = data
+              if isinstance(data, (dict, list)):
+                  body = json.dumps(data).encode()
               req = urllib.request.Request(
-                  url,
-                  data=body,
-                  headers=h,
-                  method=method
+                  url, data=body, headers=h, method=method
               )
-
-              with urllib.request.urlopen(req, timeout=120) as response:
-                  return response.read()
+              with urllib.request.urlopen(req, timeout=120) as r:
+                  return r.read()
 
           query = urllib.parse.urlencode({
               "id": "eq." + job_id,
               "select": (
-                  "id,user_id,app_name,version,package_id,"
-                  "html_path,website_zip_path,logo_path,status"
+                  "id,user_id,app_name,publisher,version,package_id,"
+                  "website_url,html_path,logo_path,fullscreen,"
+                  "allow_screenshots,allow_internet,include_readme,status"
               )
           })
 
           rows = json.loads(request(
               base + "/rest/v1/apk_build_jobs?" + query
           ))
-
           if len(rows) != 1:
-              raise SystemExit("Build job not found in Supabase.")
+              raise SystemExit("Build job not found.")
 
           job = rows[0]
-
           app_name = job.get("app_name")
           version = job.get("version")
           package_id = job.get("package_id")
+          website_url = (job.get("website_url") or "").strip()
           html_path = job.get("html_path")
-          zip_path = job.get("website_zip_path")
           logo_path = job.get("logo_path")
 
           if not isinstance(app_name, str) or not app_name.strip():
-              raise SystemExit("App name is missing.")
-
+              raise SystemExit("Missing app name.")
           if not isinstance(version, str) or not re.fullmatch(
-              r"[0-9]+(\.[0-9]+){0,3}", version
+              r"[0-9]+(\.[0-9]+){0,3}", str(version)
           ):
               raise SystemExit("Invalid app version.")
-
           if not isinstance(package_id, str) or not re.fullmatch(
               r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+",
               package_id
           ):
-              raise SystemExit("Invalid Android package ID.")
+              raise SystemExit("Invalid package ID.")
 
-          # Exactly one website input must be provided.
-          if bool(html_path) == bool(zip_path):
+          # Accept one website URL OR one uploaded HTML file.
+          if bool(website_url) == bool(html_path):
               raise SystemExit(
-                  "Provide exactly one website file: HTML or ZIP."
+                  "Provide exactly one input: HTTPS URL or HTML file."
               )
+
+          if website_url:
+              parsed = urllib.parse.urlparse(website_url)
+              if parsed.scheme != "https" or not parsed.hostname:
+                  raise SystemExit("Website URL must use HTTPS.")
 
           request(
               base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
               "PATCH",
-              {
-                  "status": "building",
-                  "error_message": None
-              },
+              {"status": "building", "error_message": None},
               {"Prefer": "return=minimal"}
           )
 
-          def download_storage(path):
-              if not isinstance(path, str) or not path:
-                  raise SystemExit("Uploaded file path is missing.")
-
+          def storage_download(path):
+              if not path:
+                  raise SystemExit("Missing uploaded file path.")
               encoded = urllib.parse.quote(path, safe="/")
-
               return request(
                   base + "/storage/v1/object/apk-builds/" + encoded
               )
 
           assets = Path("app/src/main/assets")
-
           if assets.exists():
               shutil.rmtree(assets)
-
-          assets.mkdir(parents=True, exist_ok=True)
-
-          # --------------------------------------------------
-          # HTML MODE
-          # --------------------------------------------------
+          assets.mkdir(parents=True)
 
           if html_path:
-              html = download_storage(html_path)
-
-              if not html:
-                  raise SystemExit("Uploaded HTML file is empty.")
-
+              html = storage_download(html_path)
+              if not html.strip():
+                  raise SystemExit("HTML file is empty.")
               (assets / "index.html").write_bytes(html)
 
-              print("HTML website prepared successfully.")
+          # The activity reads this configuration on app startup.
+          config = {
+              "website_url": website_url,
+              "fullscreen": bool(job.get("fullscreen", False)),
+              "allow_screenshots": bool(
+                  job.get("allow_screenshots", True)
+              ),
+              "allow_internet": bool(job.get("allow_internet", True))
+          }
+          (assets / "build-config.json").write_text(
+              json.dumps(config), encoding="utf-8"
+          )
 
-          # --------------------------------------------------
-          # ZIP MODE
-          # --------------------------------------------------
+          if job.get("include_readme", True):
+              (assets / "README.txt").write_text(
+                  app_name + "\nVersion: " + version +
+                  "\nGenerated by HTML to APK Converter.\n",
+                  encoding="utf-8"
+              )
 
-          else:
-              zip_bytes = download_storage(zip_path)
+          # Update Gradle app ID and version.
+          gradle = Path("app/build.gradle")
+          if not gradle.exists():
+              raise SystemExit("app/build.gradle not found.")
+          text = gradle.read_text(encoding="utf-8")
 
-              if not zip_bytes:
-                  raise SystemExit("Uploaded ZIP file is empty.")
-
-              try:
-                  archive = zipfile.ZipFile(BytesIO(zip_bytes))
-              except zipfile.BadZipFile:
-                  raise SystemExit("The uploaded file is not a valid ZIP.")
-
-              with archive:
-                  members = archive.infolist()
-
-                  if len(members) > 10000:
-                      raise SystemExit(
-                          "ZIP contains too many files. Maximum: 10000."
-                      )
-
-                  files = []
-                  total_size = 0
-
-                  # Validate paths and archive contents before copying.
-                  for info in members:
-                      name = info.filename.replace("\\", "/")
-
-                      if not name or "\x00" in name:
-                          raise SystemExit(
-                              "ZIP contains an invalid file path."
-                          )
-
-                      if name.startswith("/"):
-                          raise SystemExit(
-                              "ZIP contains an absolute file path."
-                          )
-
-                      parts = name.split("/")
-
-                      if any(part == ".." for part in parts):
-                          raise SystemExit(
-                              "ZIP contains an unsafe directory path."
-                          )
-
-                      if parts[0].endswith(":"):
-                          raise SystemExit(
-                              "ZIP contains an unsafe drive path."
-                          )
-
-                      if info.flag_bits & 0x1:
-                          raise SystemExit(
-                              "Password-protected ZIP files are not supported."
-                          )
-
-                      mode = info.external_attr >> 16
-
-                      if stat.S_ISLNK(mode):
-                          raise SystemExit(
-                              "ZIP symbolic links are not supported."
-                          )
-
-                      if info.is_dir():
-                          continue
-
-                      total_size += info.file_size
-
-                      if total_size > 200 * 1024 * 1024:
-                          raise SystemExit(
-                              "ZIP expands beyond the 200 MB safety limit."
-                          )
-
-                      files.append((info, name))
-
-                  # Locate the website's index.html.
-                  candidates = [
-                      name for info, name in files
-                      if PurePosixPath(name).name.lower() == "index.html"
-                  ]
-
-                  if not candidates:
-                      raise SystemExit(
-                          "No index.html was found in the uploaded ZIP."
-                      )
-
-                  # Prefer an index.html at the ZIP root.
-                  root_candidates = [
-                      name for name in candidates
-                      if "/" not in name
-                  ]
-
-                  if root_candidates:
-                      chosen_index = root_candidates[0]
-                  else:
-                      # Many website ZIPs contain one top-level folder,
-                      # such as dist/index.html or my-site/index.html.
-                      candidates.sort(
-                          key=lambda name: (
-                              name.count("/"),
-                              len(name)
-                          )
-                      )
-
-                      best_depth = candidates[0].count("/")
-
-                      best_candidates = [
-                          name for name in candidates
-                          if name.count("/") == best_depth
-                      ]
-
-                      if len(best_candidates) != 1:
-                          raise SystemExit(
-                              "ZIP contains multiple possible website "
-                              "entry points. Put the correct index.html "
-                              "at the ZIP root and try again."
-                          )
-
-                      chosen_index = best_candidates[0]
-
-                  root_prefix = str(
-                      PurePosixPath(chosen_index).parent
-                  )
-
-                  if root_prefix == ".":
-                      root_prefix = ""
-
-                  print("Website entry point:", chosen_index)
-
-                  copied = 0
-
-                  for info, name in files:
-                      if root_prefix:
-                          prefix = root_prefix + "/"
-
-                          if not name.startswith(prefix):
-                              continue
-
-                          relative_name = name[len(prefix):]
-                      else:
-                          relative_name = name
-
-                      if not relative_name:
-                          continue
-
-                      relative = PurePosixPath(relative_name)
-
-                      if (
-                          relative.is_absolute()
-                          or any(
-                              part in ("", ".", "..")
-                              for part in relative.parts
-                          )
-                      ):
-                          raise SystemExit(
-                              "ZIP contains an unsafe relative path."
-                          )
-
-                      destination = assets.joinpath(*relative.parts)
-
-                      # Confirm the output remains inside the assets folder.
-                      if not destination.resolve().is_relative_to(
-                          assets.resolve()
-                      ):
-                          raise SystemExit(
-                              "ZIP contains a path outside the assets folder."
-                          )
-
-                      destination.parent.mkdir(
-                          parents=True,
-                          exist_ok=True
-                      )
-
-                      with archive.open(info, "r") as source:
-                          with destination.open("wb") as target:
-                              shutil.copyfileobj(
-                                  source,
-                                  target,
-                                  length=1024 * 1024
-                              )
-
-                      copied += 1
-
-                  if not (assets / "index.html").is_file():
-                      raise SystemExit(
-                          "The selected website root did not produce "
-                          "an index.html file."
-                      )
-
-                  print("ZIP website extracted successfully.")
-                  print("Website files copied:", copied)
-
-          # --------------------------------------------------
-          # CONFIGURE ANDROID APPLICATION
-          # --------------------------------------------------
-
-          gradle_file = Path("app/build.gradle")
-
-          if not gradle_file.exists():
-              raise SystemExit("app/build.gradle was not found.")
-
-          gradle_text = gradle_file.read_text(encoding="utf-8")
-
-          gradle_text, count_id = re.subn(
+          text, n1 = re.subn(
               r"""applicationId\s+(['"])[^'"]*\1""",
-              lambda m: "applicationId '" + package_id + "'",
-              gradle_text,
-              count=1
+              lambda m: 'applicationId "' + package_id + '"',
+              text, count=1
           )
-
-          if count_id != 1:
-              raise SystemExit("Could not update applicationId.")
-
-          gradle_text, count_version = re.subn(
+          text, n2 = re.subn(
               r"""versionName\s+(['"])[^'"]*\1""",
-              lambda m: "versionName '" + version + "'",
-              gradle_text,
-              count=1
+              lambda m: 'versionName "' + version + '"',
+              text, count=1
           )
+          if n1 != 1 or n2 != 1:
+              raise SystemExit(
+                  "Could not update applicationId/versionName in app/build.gradle."
+              )
+          gradle.write_text(text, encoding="utf-8")
 
-          if count_version != 1:
-              raise SystemExit("Could not update versionName.")
-
-          gradle_file.write_text(
-              gradle_text,
-              encoding="utf-8"
-          )
-
-          # --------------------------------------------------
-          # GENERATE LAUNCHER ICON
-          # --------------------------------------------------
-
+          # Generate launcher icons.
           if logo_path:
-              logo_bytes = download_storage(logo_path)
-
               try:
                   source = Image.open(
-                      BytesIO(logo_bytes)
+                      BytesIO(storage_download(logo_path))
                   ).convert("RGBA")
                   source.load()
-              except Exception as exc:
-                  raise SystemExit(
-                      "Uploaded logo is not a valid image: " + str(exc)
-                  )
+              except Exception as e:
+                  raise SystemExit("Invalid PNG logo: " + str(e))
           else:
-              source = Image.new(
-                  "RGBA",
-                  (512, 512),
-                  (15, 15, 15, 255)
-              )
-
-              draw = ImageDraw.Draw(source)
-
-              draw.rounded_rectangle(
-                  (48, 48, 464, 464),
-                  radius=100,
-                  outline=(225, 225, 225, 255),
-                  width=18
-              )
-
-              draw.text(
-                  (194, 155),
-                  "A",
-                  fill=(240, 240, 240, 255)
-              )
-
-          square = Image.new(
-              "RGBA",
-              (512, 512),
-              (0, 0, 0, 0)
-          )
+              source = Image.new("RGBA", (512, 512), (20, 20, 20, 255))
 
           fitted = ImageOps.contain(
-              source,
-              (448, 448),
-              method=Image.Resampling.LANCZOS
+              source, (448, 448), method=Image.Resampling.LANCZOS
           )
-
-          square.alpha_composite(
+          icon = Image.new("RGBA", (512, 512), (20, 20, 20, 255))
+          icon.alpha_composite(
               fitted,
-              (
-                  (512 - fitted.width) // 2,
-                  (512 - fitted.height) // 2
-              )
+              ((512 - fitted.width) // 2, (512 - fitted.height) // 2)
           )
 
           res = Path("app/src/main/res")
-
-          sizes = {
-              "mipmap-mdpi": 48,
-              "mipmap-hdpi": 72,
-              "mipmap-xhdpi": 96,
-              "mipmap-xxhdpi": 144,
+          for folder, size in {
+              "mipmap-mdpi": 48, "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96, "mipmap-xxhdpi": 144,
               "mipmap-xxxhdpi": 192
-          }
-
-          for folder, size in sizes.items():
+          }.items():
               directory = res / folder
               directory.mkdir(parents=True, exist_ok=True)
-
-              icon = square.resize(
-                  (size, size),
-                  Image.Resampling.LANCZOS
+              resized = icon.resize(
+                  (size, size), Image.Resampling.LANCZOS
               )
+              resized.save(directory / "ic_launcher.png")
+              resized.save(directory / "ic_launcher_round.png")
 
-              icon.save(
-                  directory / "ic_launcher.png",
-                  format="PNG"
-              )
-
-              icon.save(
-                  directory / "ic_launcher_round.png",
-                  format="PNG"
-              )
-
-          # --------------------------------------------------
-          # UPDATE ANDROID MANIFEST
-          # --------------------------------------------------
-
+          # Set app label and icon in the manifest.
+          import xml.etree.ElementTree as ET
           manifest = Path("app/src/main/AndroidManifest.xml")
-
-          if not manifest.exists():
-              raise SystemExit("AndroidManifest.xml was not found.")
-
-          raw = manifest.read_bytes().lstrip(
-              b"\xef\xbb\xbf \t\r\n"
-          )
-
-          android_ns = "http://schemas.android.com/apk/res/android"
-          ET.register_namespace("android", android_ns)
-
-          try:
-              root = ET.fromstring(raw)
-          except ET.ParseError as exc:
-              raise SystemExit(
-                  "Invalid AndroidManifest.xml: " + str(exc)
-              )
-
-          if root.tag != "manifest":
-              raise SystemExit("Invalid manifest root element.")
-
-          application = root.find("application")
-
-          if application is None:
-              raise SystemExit(
-                  "Manifest has no application element."
-              )
-
-          application.set(
-              "{" + android_ns + "}label",
-              app_name
-          )
-
-          application.set(
-              "{" + android_ns + "}icon",
-              "@mipmap/ic_launcher"
-          )
-
-          application.set(
-              "{" + android_ns + "}roundIcon",
-              "@mipmap/ic_launcher_round"
-          )
-
+          ns = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", ns)
+          root = ET.parse(manifest).getroot()
+          app = root.find("application")
+          if app is None:
+              raise SystemExit("Manifest application element missing.")
+          app.set("{" + ns + "}label", app_name)
+          app.set("{" + ns + "}icon", "@mipmap/ic_launcher")
+          app.set("{" + ns + "}roundIcon", "@mipmap/ic_launcher_round")
           ET.ElementTree(root).write(
-              str(manifest),
-              encoding="utf-8",
-              xml_declaration=True
+              manifest, encoding="utf-8", xml_declaration=True
           )
 
-          ET.parse(str(manifest))
-
-          print("Android manifest validated.")
-          print("Application configuration complete.")
-
-          safe_name = re.sub(
-              r"[^A-Za-z0-9_-]+",
-              "-",
-              app_name
-          ).strip("-") or "MyApp"
-
-          safe_version = re.sub(
-              r"[^A-Za-z0-9._-]+",
-              "-",
-              version
+          # Generate MainActivity to read the build configuration.
+          java_files = list(
+              Path("app/src/main/java").rglob("MainActivity.java")
           )
+          if len(java_files) != 1:
+              raise SystemExit(
+                  "Expected exactly one MainActivity.java under app/src/main/java."
+              )
 
-          apk_filename = f"{safe_name}-v{safe_version}.apk"
+          java_file = java_files[0]
+          package_line = re.search(
+              r"^\s*package\s+[\w.]+\s*;",
+              java_file.read_text(encoding="utf-8"),
+              re.MULTILINE
+          )
+          if not package_line:
+              raise SystemExit("Cannot determine MainActivity package.")
+          package_decl = package_line.group(0).strip()
 
-          with open(
-              os.environ["GITHUB_ENV"],
-              "a",
+          activity = r'''
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebResourceRequest;
+          import android.net.Uri;
+          import org.json.JSONObject;
+          import java.io.InputStream;
+          import java.io.ByteArrayOutputStream;
+
+          public class MainActivity extends Activity {
+              private WebView webView;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  JSONObject config = new JSONObject();
+                  try {
+                      InputStream in = getAssets().open("build-config.json");
+                      ByteArrayOutputStream out = new ByteArrayOutputStream();
+                      byte[] buffer = new byte[4096];
+                      int count;
+                      while ((count = in.read(buffer)) != -1) {
+                          out.write(buffer, 0, count);
+                      }
+                      in.close();
+                      config = new JSONObject(out.toString("UTF-8"));
+                  } catch (Exception ignored) {}
+
+                  boolean fullscreen = config.optBoolean("fullscreen", false);
+                  boolean screenshots = config.optBoolean("allow_screenshots", true);
+                  boolean internet = config.optBoolean("allow_internet", true);
+                  String url = config.optString("website_url", "");
+
+                  if (fullscreen) {
+                      getWindow().getDecorView().setSystemUiVisibility(
+                          View.SYSTEM_UI_FLAG_FULLSCREEN
+                          | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                          | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                      );
+                  }
+                  if (!screenshots) {
+                      getWindow().setFlags(
+                          WindowManager.LayoutParams.FLAG_SECURE,
+                          WindowManager.LayoutParams.FLAG_SECURE
+                      );
+                  }
+
+                  webView = new WebView(this);
+                  setContentView(webView);
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
+                  settings.setJavaScriptCanOpenWindowsAutomatically(true);
+
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(
+                              WebView view, WebResourceRequest request) {
+                          Uri uri = request.getUrl();
+                          String scheme = uri.getScheme();
+                          return !("https".equalsIgnoreCase(scheme)
+                              || "http".equalsIgnoreCase(scheme)
+                              || "file".equalsIgnoreCase(scheme)
+                              || "about".equalsIgnoreCase(scheme));
+                      }
+                  });
+                  webView.setWebChromeClient(new WebChromeClient());
+
+                  if (!internet && url.startsWith("https://")) {
+                      webView.loadUrl("file:///android_asset/index.html");
+                  } else if (url.startsWith("https://")) {
+                      webView.loadUrl(url);
+                  } else {
+                      webView.loadUrl("file:///android_asset/index.html");
+                  }
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (webView != null) {
+                      webView.destroy();
+                      webView = null;
+                  }
+                  super.onDestroy();
+              }
+          }
+          '''
+          java_file.write_text(
+              package_decl + "\n" + activity.strip() + "\n",
               encoding="utf-8"
-          ) as f:
-              f.write("APK_FILENAME=" + apk_filename + "\n")
+          )
+
+          print("Prepared app for URL or HTML input.")
+
+          safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", app_name).strip("-")
+          safe_version = re.sub(r"[^A-Za-z0-9._-]+", "-", version)
+          filename = (safe_name or "MyApp") + "-v" + safe_version + ".apk"
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write("APK_FILENAME=" + filename + "\n")
           PY
 
       - name: Build APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK to private Supabase storage
+      - name: Upload APK and mark complete
         shell: bash
         run: |
           python3 - <<'PY'
-          import os
-          import json
-          import urllib.request
-          import urllib.parse
+          import os, json, urllib.request, urllib.parse
           from pathlib import Path
 
           base = os.environ["SUPABASE_URL"].rstrip("/")
@@ -593,81 +395,58 @@ jobs:
 
           headers = {
               "apikey": key,
-              "Authorization": "Bearer " + key
+              "Authorization": "Bearer " + key,
+              "Content-Type": "application/json"
           }
 
-          def request(url, method="GET", data=None,
-                      content_type=None, extra=None):
+          def request(url, method="GET", data=None, extra=None):
               h = dict(headers)
-
-              if content_type:
-                  h["Content-Type"] = content_type
-
               if extra:
                   h.update(extra)
-
+              if isinstance(data, (dict, list)):
+                  data = json.dumps(data).encode()
               req = urllib.request.Request(
-                  url,
-                  data=data,
-                  method=method,
-                  headers=h
+                  url, data=data, headers=h, method=method
               )
-
-              with urllib.request.urlopen(req, timeout=120) as response:
-                  return response.read()
+              with urllib.request.urlopen(req, timeout=120) as r:
+                  return r.read()
 
           query = urllib.parse.urlencode({
               "id": "eq." + job_id,
               "select": "id,user_id"
           })
-
           rows = json.loads(request(
               base + "/rest/v1/apk_build_jobs?" + query
           ))
-
           if len(rows) != 1:
               raise SystemExit("Build job not found.")
 
-          apk_file = Path(
+          apk = Path(
               "app/build/outputs/apk/debug/app-debug.apk"
           )
-
-          if not apk_file.exists() or apk_file.stat().st_size == 0:
-              raise SystemExit("APK output was not created.")
-
-          apk = apk_file.read_bytes()
+          if not apk.exists() or apk.stat().st_size == 0:
+              raise SystemExit("APK output is missing.")
 
           path = "outputs/{}/{}/{}".format(
-              rows[0]["user_id"],
-              job_id,
-              filename
+              rows[0]["user_id"], job_id, filename
           )
-
           encoded = urllib.parse.quote(path, safe="/")
-
           request(
               base + "/storage/v1/object/apk-builds/" + encoded,
-              method="POST",
-              data=apk,
-              content_type="application/vnd.android.package-archive",
-              extra={"x-upsert": "true"}
+              "POST",
+              apk.read_bytes(),
+              {
+                  "Content-Type": "application/vnd.android.package-archive",
+                  "x-upsert": "true"
+              }
           )
-
-          payload = json.dumps({
-              "status": "complete",
-              "apk_path": path,
-              "error_message": None
-          }).encode("utf-8")
-
           request(
               base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
-              method="PATCH",
-              data=payload,
-              content_type="application/json",
-              extra={"Prefer": "return=minimal"}
+              "PATCH",
+              {"status": "complete", "apk_path": path, "error_message": None},
+              {"Prefer": "return=minimal"}
           )
-
-          print("APK uploaded:", filename)
+          print("APK uploaded successfully.")
           PY
 
       - name: Mark build failed
@@ -675,25 +454,18 @@ jobs:
         continue-on-error: true
         run: |
           python3 - <<'PY'
-          import os
-          import json
-          import urllib.request
-
+          import os, json, urllib.request
           base = os.environ.get("SUPABASE_URL", "").rstrip("/")
           key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-          job_id = os.environ.get("JOB_ID", "")
-
-          if base and key and job_id:
-              payload = json.dumps({
+          job = os.environ.get("JOB_ID", "")
+          if base and key and job:
+              data = json.dumps({
                   "status": "failed",
-                  "error_message": (
-                      "Build failed. Check GitHub Actions logs."
-                  )
-              }).encode("utf-8")
-
+                  "error_message": "Build failed. Check GitHub Actions logs."
+              }).encode()
               req = urllib.request.Request(
-                  base + "/rest/v1/apk_build_jobs?id=eq." + job_id,
-                  data=payload,
+                  base + "/rest/v1/apk_build_jobs?id=eq." + job,
+                  data=data,
                   method="PATCH",
                   headers={
                       "apikey": key,
@@ -702,9 +474,6 @@ jobs:
                       "Prefer": "return=minimal"
                   }
               )
-
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  response.read()
-
-          print("Failure status update attempted.")
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  r.read()
           PY
