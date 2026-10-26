@@ -271,13 +271,19 @@ Deno.serve(async (req) => {
       await admin.storage.from("apk-builds").remove(uploaded);
     }
 
-    console.error("Build job insert failed:", insertError.message);
+    console.error("Build job insert failed:", {
+  message: insertError.message,
+  code: insertError.code,
+  details: insertError.details,
+  hint: insertError.hint,
+});
 
-    return out({
-      error:
-        "Could not create the build job. Check the apk_build_jobs table columns.",
-    }, 500);
-  }
+return out({
+  error: "Could not create the build job.",
+  details: insertError.message,
+  code: insertError.code,
+  hint: insertError.hint,
+}, 500);
 
   // Dispatch the GitHub Actions workflow.
   const githubToken = Deno.env.get("GITHUB_TOKEN");
