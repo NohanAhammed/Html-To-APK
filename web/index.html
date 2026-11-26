@@ -10,10 +10,10 @@
 :root {
   color-scheme: dark;
   --bg: #080808;
-  --panel: #111111;
-  --line: #303030;
+  --panel: #0b0b0b;
+  --line: #444444;
   --text: #f2f2f2;
-  --muted: #a3a3a3;
+  --muted: #a0a0a0;
   --success: #9be5b0;
   --error: #ff9c9c;
 }
@@ -21,7 +21,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(ellipse at 50% -15%, #292929, transparent 45%), var(--bg);
+  background: var(--bg);
   color: var(--text);
   font: 15px/1.5 system-ui, sans-serif;
 }
@@ -31,38 +31,18 @@ body {
   padding: 25px 16px 50px;
 }
 header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 28px;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
 }
-.logo {
-  width: 46px;
-  height: 46px;
-  display: grid;
-  place-items: center;
-  border: 1px solid #555;
-  border-radius: 14px;
-  background: linear-gradient(145deg, #292929, #0b0b0b);
-  font-size: 23px;
-  font-weight: 800;
-}
-.brand { font-size: 18px; font-weight: 750; }
-.muted { color: var(--muted); font-size: 12px; }
-h1 {
-  font-size: clamp(30px, 7vw, 44px);
-  line-height: 1.08;
-  letter-spacing: -1.5px;
-  margin: 0 0 12px;
-}
-.intro { color: #bdbdbd; margin-bottom: 25px; }
+.brand { font-size: 20px; font-weight: 750; letter-spacing: -.4px; }
 .panel {
-  background: linear-gradient(155deg, #171717, #0d0d0d);
+  background: #0b0b0b;
   border: 1px solid var(--line);
-  border-radius: 20px;
+  border-radius: 2px;
   padding: 21px;
   margin: 16px 0;
-  box-shadow: 0 15px 45px #0005;
+  box-shadow: none;
 }
 h2 { font-size: 16px; margin: 0 0 17px; }
 .field { margin-bottom: 17px; }
@@ -78,13 +58,13 @@ select {
   width: 100%;
   padding: 12px;
   border: 1px solid #383838;
-  border-radius: 12px;
+  border-radius: 2px;
   background: #090909;
   color: white;
   font: inherit;
   outline: none;
 }
-input:focus, select:focus { border-color: #aaa; }
+input:focus, select:focus { border-color: #fff; }
 input[type=file] {
   width: 100%;
   color: #ccc;
@@ -94,7 +74,7 @@ input[type=file] {
   border: 1px dashed #555;
   background: #0a0a0a;
   padding: 15px;
-  border-radius: 14px;
+  border-radius: 2px;
 }
 .hint { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .fileinfo {
@@ -129,9 +109,9 @@ input[type=file] {
 button {
   width: 100%;
   padding: 14px;
-  border: 1px solid #eee;
-  border-radius: 13px;
-  background: #eee;
+  border: 1px solid #fff;
+  border-radius: 2px;
+  background: #fff;
   color: #111;
   font: inherit;
   font-weight: 750;
@@ -143,7 +123,7 @@ button:disabled { opacity: .5; cursor: wait; }
   margin-top: 15px;
   padding: 14px;
   border: 1px solid #333;
-  border-radius: 12px;
+  border-radius: 2px;
   background: #0b0b0b;
   overflow-wrap: anywhere;
 }
@@ -155,13 +135,13 @@ button:disabled { opacity: .5; cursor: wait; }
   color: white;
   margin-top: 12px;
   border: 1px solid #555;
-  border-radius: 10px;
+  border-radius: 2px;
   padding: 9px 12px;
 }
 .progress {
   height: 5px;
   background: #292929;
-  border-radius: 8px;
+  border-radius: 0;
   margin-top: 12px;
   overflow: hidden;
 }
@@ -172,19 +152,6 @@ button:disabled { opacity: .5; cursor: wait; }
   transition: width .3s;
 }
 .hidden { display: none !important; }
-.notice {
-  border: 1px solid #333;
-  padding: 13px;
-  border-radius: 12px;
-  color: #bbb;
-  font-size: 12px;
-}
-footer {
-  color: #777;
-  font-size: 12px;
-  text-align: center;
-  margin-top: 25px;
-}
 @media(max-width:540px) {
   .wrap { padding: 20px 12px 35px; }
   .panel { padding: 17px; }
@@ -196,18 +163,8 @@ footer {
 <body>
 <main class="wrap">
 <header>
-  <div class="logo">A</div>
-  <div>
-    <div class="brand">HTML APK Converter</div>
-    <div class="muted">Turn your website into an Android app</div>
-  </div>
+  <div class="brand">HTML to APK</div>
 </header>
-
-<h1>Your website.<br>As an Android app.</h1>
-<p class="intro">
-  Convert a published website or upload a single HTML file.
-  Customize your app and request an APK build.
-</p>
 
 <form id="buildForm">
 <section class="panel">
@@ -299,6 +256,12 @@ footer {
     </label>
 
     <label class="check">
+      <input id="allowStorage" type="checkbox">
+      <span><strong>Allow storage access</strong>
+      <small>Allow users to select files and save downloads in the Android app.</small></span>
+    </label>
+
+    <label class="check">
       <input id="includeReadme" type="checkbox" checked>
       <span><strong>Include README</strong>
       <small>Include basic project information if supported by the backend.</small></span>
@@ -307,15 +270,7 @@ footer {
 </section>
 
 <section class="panel">
-  <div class="notice">
-    <strong>Build and storage information</strong><br>
-    Your request is processed by the configured Supabase function and
-    GitHub Actions workflow. Stored files follow your backend's retention
-    and cleanup configuration.
-  </div>
-
-  <div style="height:16px"></div>
-  <button id="buildButton" type="submit">Build my APK</button>
+  <button id="buildButton" type="submit">Build APK</button>
   <div id="status" class="status" role="status" aria-live="polite"></div>
   <div id="progressWrap" class="progress hidden">
     <div id="progressBar" class="bar"></div>
@@ -323,7 +278,6 @@ footer {
 </section>
 </form>
 
-<footer>Keep a backup of your original website files.</footer>
 </main>
 
 <script type="module">
@@ -557,6 +511,7 @@ form.addEventListener('submit', async (event) => {
       allowInternet: websiteUrl
         ? true
         : document.getElementById('allowInternet').checked,
+      allowStorage: document.getElementById('allowStorage').checked,
       includeReadme: document.getElementById('includeReadme').checked,
       websiteUrl
     };
