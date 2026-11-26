@@ -1,24 +1,24 @@
+
 package com.htmlapk.converter;
 
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
-import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.OpenableColumns;
-import android.webkit.CookieManager;
+import android.view.WindowManager;
 import android.webkit.DownloadListener;
-import android.webkit.URLUtil;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.webkit.WebSettings;
-import android.webkit.WebResourceRequest;
-import android.view.View;
-import android.view.WindowManager;
 import android.widget.Toast;
+
+import java.util.ArrayList;
 
 public class MainActivity extends Activity {
 
@@ -26,31 +26,28 @@ public class MainActivity extends Activity {
 
     private static final int FILE_CHOOSER_REQUEST = 1001;
 
-    private android.webkit.ValueCallback<Uri[]> fileUploadCallback;
+    private ValueCallback<Uri[]> fileUploadCallback;
 
     private boolean allowStorage = false;
+    private boolean fullscreen = false;
+    private boolean allowScreenshots = true;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        String websiteUrl = getIntent().getStringExtra("website_url");
-
-        boolean fullscreen =
-                getIntent().getBooleanExtra("fullscreen", false);
-
-        boolean allowScreenshots =
-                getIntent().getBooleanExtra("allow_screenshots", true);
-
-        allowStorage =
-                getIntent().getBooleanExtra("allow_storage", false);
+        fullscreen = getIntent().getBooleanExtra("fullscreen", false);
+        allowScreenshots = getIntent().getBooleanExtra(
+                "allow_screenshots", true
+        );
+        allowStorage = getIntent().getBooleanExtra(
+                "allow_storage", false
+        );
 
         if (fullscreen) {
-            getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            getWindow().setFlags(
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN
             );
         }
 
@@ -65,24 +62,28 @@ public class MainActivity extends Activity {
         setContentView(webView);
 
         WebSettings settings = webView.getSettings();
+
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
 
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        settings.setSupportMultipleWindows(false);
+
+        settings.setLoadsImagesAutomatically(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+
         webView.setWebViewClient(new WebViewClient() {
+
             @Override
             public boolean shouldOverrideUrlLoading(
-                    WebView view, WebResourceRequest request) {
-
-                Uri uri = request.getUrl();
-
-                if ("http".equalsIgnoreCase(uri.getScheme())
-                        || "https".equalsIgnoreCase(uri.getScheme())) {
-                    return false;
-                }
-
-                return true;
+                    WebView view,
+                    WebResourceRequest request
+            ) {
+                return false;
             }
         });
 
@@ -90,20 +91,12 @@ public class MainActivity extends Activity {
 
             @Override
             public boolean onShowFileChooser(
-                    WebView webView,
-                    android.webkit.ValueCallback<Uri[]> filePathCallback,
-                    FileChooserParams fileChooserParams) {
+                    WebView view,
+                    ValueCallback<Uri[]> filePathCallback,
+                    FileChooserParams fileChooserParams
+            ) {
 
-                if (!allowStorage) {
-                    Toast.makeText(
-                            MainActivity.this,
-                            "Storage access is disabled.",
-                            Toast.LENGTH_SHORT
-                    ).show();
-
-                    return false;
-                }
-
+                // Cancel any previous file selection.
                 if (fileUploadCallback != null) {
                     fileUploadCallback.onReceiveValue(null);
                 }
@@ -111,103 +104,135 @@ public class MainActivity extends Activity {
                 fileUploadCallback = filePathCallback;
 
                 try {
-                    Intent intent = fileChooserParams.createIntent();
+                    Intent intent;
+
+                    // Use Android's file picker.
+                    try {
+                        intent = fileChooserParams.createIntent();
+                    } catch (Exception e) {
+                        intent = new Intent(Intent.ACTION_GET_CONTENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("*/*");
+                    }
+
+                    // Make sure the picker can select files.
+                    if (intent.getType() == null) {
+                        intent.setType("*/*");
+                    }
+
                     startActivityForResult(
                             intent,
                             FILE_CHOOSER_REQUEST
                     );
-                } catch (Exception e) {
+
+                    return true;
+
+                } catch (ActivityNotFoundException e) {
+
+                    fileUploadCallback.onReceiveValue(null);
                     fileUploadCallback = null;
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "No file picker available.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+
+                    return true;
+
+                } catch (Exception e) {
+
+                    fileUploadCallback.onReceiveValue(null);
+                    fileUploadCallback = null;
+
                     Toast.makeText(
                             MainActivity.this,
                             "Unable to open file picker.",
                             Toast.LENGTH_SHORT
                     ).show();
 
-                    return false;
+                    return true;
                 }
-
-                return true;
             }
         });
 
-        if (allowStorage) {
-            webView.setDownloadListener(new DownloadListener() {
-                @Override
-                public void onDownloadStart(
-                        String url,
-                        String userAgent,
-                        String contentDisposition,
-                        String mimeType,
-                        long contentLength) {
+        // Handle downloads.
+        webView.setDownloadListener(
+                new DownloadListener() {
 
-                    try {
-                        String fileName = URLUtil.guessFileName(
-                                url,
-                                contentDisposition,
-                                mimeType
-                        );
+                    @Override
+                    public void onDownloadStart(
+                            String url,
+                            String userAgent,
+                            String contentDisposition,
+                            String mimeType,
+                            long contentLength
+                    ) {
 
-                        DownloadManager.Request request =
-                                new DownloadManager.Request(Uri.parse(url));
-
-                        String cookies =
-                                CookieManager.getInstance().getCookie(url);
-
-                        if (cookies != null) {
-                            request.addRequestHeader("Cookie", cookies);
+                        if (!allowStorage) {
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Downloads are disabled for this app.",
+                                    Toast.LENGTH_SHORT
+                            ).show();
+                            return;
                         }
 
-                        request.addRequestHeader(
-                                "User-Agent",
-                                userAgent
-                        );
+                        try {
+                            DownloadManager.Request request =
+                                    new DownloadManager.Request(
+                                            Uri.parse(url)
+                                    );
 
-                        request.setTitle(fileName);
-                        request.setDescription("Downloading file...");
-                        request.setMimeType(mimeType);
+                            request.setMimeType(mimeType);
 
-                        request.setNotificationVisibility(
-                                DownloadManager.Request
-                                        .VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                        );
+                            request.addRequestHeader(
+                                    "User-Agent",
+                                    userAgent
+                            );
 
-                        request.setDestinationInExternalFilesDir(
-                                MainActivity.this,
-                                Environment.DIRECTORY_DOWNLOADS,
-                                fileName
-                        );
+                            request.setNotificationVisibility(
+                                    DownloadManager.Request
+                                            .VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                            );
 
-                        DownloadManager manager =
-                                (DownloadManager) getSystemService(
-                                        DOWNLOAD_SERVICE
-                                );
+                            request.setDestinationInExternalFilesDir(
+                                    MainActivity.this,
+                                    Environment.DIRECTORY_DOWNLOADS,
+                                    Uri.parse(url).getLastPathSegment()
+                            );
 
-                        manager.enqueue(request);
+                            DownloadManager manager =
+                                    (DownloadManager) getSystemService(
+                                            DOWNLOAD_SERVICE
+                                    );
 
-                        Toast.makeText(
-                                MainActivity.this,
-                                "Download started.",
-                                Toast.LENGTH_SHORT
-                        ).show();
+                            if (manager != null) {
+                                manager.enqueue(request);
 
-                    } catch (Exception e) {
-                        Toast.makeText(
-                                MainActivity.this,
-                                "Download failed.",
-                                Toast.LENGTH_SHORT
-                        ).show();
+                                Toast.makeText(
+                                        MainActivity.this,
+                                        "Download started.",
+                                        Toast.LENGTH_SHORT
+                                ).show();
+                            }
+
+                        } catch (Exception e) {
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Download failed.",
+                                    Toast.LENGTH_SHORT
+                            ).show();
+                        }
                     }
                 }
-            });
-        }
+        );
 
-        if (websiteUrl != null && !websiteUrl.trim().isEmpty()
-                && (websiteUrl.startsWith("https://")
-                || websiteUrl.startsWith("http://"))) {
+        // Load the APK's website.
+        String startUrl = getIntent().getStringExtra("website_url");
 
-            webView.loadUrl(websiteUrl);
-
+        if (startUrl != null && !startUrl.trim().isEmpty()) {
+            webView.loadUrl(startUrl);
         } else {
             webView.loadUrl("file:///android_asset/index.html");
         }
@@ -217,8 +242,8 @@ public class MainActivity extends Activity {
     protected void onActivityResult(
             int requestCode,
             int resultCode,
-            Intent data) {
-
+            Intent data
+    ) {
         super.onActivityResult(requestCode, resultCode, data);
 
         if (requestCode == FILE_CHOOSER_REQUEST) {
@@ -230,17 +255,31 @@ public class MainActivity extends Activity {
             Uri[] results = null;
 
             if (resultCode == Activity.RESULT_OK && data != null) {
+
+                // Support selecting multiple files.
                 if (data.getClipData() != null) {
+
                     int count = data.getClipData().getItemCount();
-                    results = new Uri[count];
+                    ArrayList<Uri> uris = new ArrayList<>();
 
                     for (int i = 0; i < count; i++) {
-                        results[i] =
-                                data.getClipData().getItemAt(i).getUri();
+                        Uri uri = data.getClipData()
+                                .getItemAt(i)
+                                .getUri();
+
+                        if (uri != null) {
+                            uris.add(uri);
+                        }
                     }
 
+                    results = uris.toArray(new Uri[0]);
+
                 } else if (data.getData() != null) {
-                    results = new Uri[]{data.getData()};
+
+                    // Support selecting one file.
+                    results = new Uri[]{
+                            data.getData()
+                    };
                 }
             }
 
@@ -251,6 +290,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
@@ -260,6 +300,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+
         if (fileUploadCallback != null) {
             fileUploadCallback.onReceiveValue(null);
             fileUploadCallback = null;
